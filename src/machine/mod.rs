@@ -38,7 +38,7 @@ use crate::machine::machine_state::*;
 use crate::machine::stack::*;
 use crate::machine::streams::*;
 use crate::parser::ast::*;
-use crate::parser::rug::{Integer, Rational};
+use crate::parser::dashu::{Integer, Rational};
 use crate::types::*;
 
 use indexmap::IndexMap;
