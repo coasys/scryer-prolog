@@ -5,16 +5,19 @@ pub mod code_walker;
 #[macro_use]
 pub mod loader;
 pub mod compile;
+pub mod config;
 pub mod copier;
 pub mod dispatch;
 pub mod gc;
 pub mod heap;
+pub mod lib_machine;
 pub mod load_state;
 pub mod machine_errors;
 pub mod machine_indices;
 pub mod machine_state;
 pub mod machine_state_impl;
 pub mod mock_wam;
+pub mod parsed_results;
 pub mod partial_string;
 pub mod preprocessor;
 pub mod stack;
@@ -47,9 +50,13 @@ use ordered_float::OrderedFloat;
 
 use std::cmp::Ordering;
 use std::env;
+use std::io::Read;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use tokio::runtime::Runtime;
+
+use self::config::MachineConfig;
+use self::parsed_results::*;
 
 lazy_static! {
     pub static ref INTERRUPT: AtomicBool = AtomicBool::new(false);
@@ -217,23 +224,18 @@ impl Machine {
 
     pub fn load_file(&mut self, path: &str, stream: Stream) {
         self.machine_st.registers[1] = stream_as_cell!(stream);
-        self.machine_st.registers[2] = atom_as_cell!(
-            self.machine_st.atom_tbl.build_with(path)
-        );
+        self.machine_st.registers[2] = atom_as_cell!(self.machine_st.atom_tbl.build_with(path));
 
         self.run_module_predicate(atom!("loader"), (atom!("file_load"), 2));
     }
 
-    fn load_top_level(&mut self) {
+    fn load_top_level(&mut self, program: &'static str) {
         let mut path_buf = current_dir();
 
         path_buf.push("src/toplevel.pl");
 
         let path = path_buf.to_str().unwrap();
-        let toplevel_stream = Stream::from_static_string(
-            include_str!("../toplevel.pl"),
-            &mut self.machine_st.arena,
-        );
+        let toplevel_stream = Stream::from_static_string(program, &mut self.machine_st.arena);
 
         self.load_file(path, toplevel_stream);
 
@@ -288,7 +290,7 @@ impl Machine {
         }
     }
 
-    pub fn run_top_level(&mut self) {
+    pub fn run_top_level(&mut self, module_name: Atom, key: PredicateKey) {
         let mut arg_pstrs = vec![];
 
         for arg in env::args() {
@@ -299,11 +301,26 @@ impl Machine {
             ));
         }
 
-        self.machine_st.registers[1] = heap_loc_as_cell!(
-            iter_to_heap_list(&mut self.machine_st.heap, arg_pstrs.into_iter())
-        );
+        self.machine_st.registers[1] = heap_loc_as_cell!(iter_to_heap_list(
+            &mut self.machine_st.heap,
+            arg_pstrs.into_iter()
+        ));
 
-        self.run_module_predicate(atom!("$toplevel"), (atom!("$repl"), 1));
+        self.run_module_predicate(module_name, key);
+    }
+
+    pub fn set_user_input(&mut self, input: String) {
+        self.user_input = Stream::from_owned_string(input, &mut self.machine_st.arena);
+    }
+
+    pub fn get_user_output(&self) -> String {
+        let output_bytes: Vec<_> = self.user_output.bytes().map(|b| b.unwrap()).collect();
+        String::from_utf8(output_bytes).unwrap()
+    }
+
+    pub fn load_module_string(&mut self, module_name: &str, program: String) {
+        let stream = Stream::from_owned_string(program, &mut self.machine_st.arena);
+        self.load_file(module_name, stream);
     }
 
     pub(crate) fn configure_modules(&mut self) {
@@ -421,18 +438,26 @@ impl Machine {
         }
     }
 
-    pub fn new() -> Self {
+    pub fn new(config: MachineConfig) -> Self {
         use ref_thread_local::RefThreadLocal;
 
         let args = MachineArgs::new();
         let mut machine_st = MachineState::new();
 
-        let user_input = Stream::stdin(&mut machine_st.arena, args.add_history);
-        let user_output = Stream::stdout(&mut machine_st.arena);
-        let user_error = Stream::stderr(&mut machine_st.arena);
+        let (user_input, user_output, user_error) = match config.streams {
+            config::StreamConfig::Stdio => (
+                Stream::stdin(&mut machine_st.arena, args.add_history),
+                Stream::stdout(&mut machine_st.arena),
+                Stream::stderr(&mut machine_st.arena),
+            ),
+            config::StreamConfig::Memory => (
+                Stream::Null(StreamOptions::default()),
+                Stream::from_owned_string("".to_owned(), &mut machine_st.arena),
+                Stream::stderr(&mut machine_st.arena),
+            ),
+        };
 
-        let runtime = tokio::runtime::Runtime::new()
-            .unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
 
         let mut wam = Machine {
             machine_st,
@@ -515,7 +540,7 @@ impl Machine {
         }
 
         wam.load_special_forms();
-        wam.load_top_level();
+        wam.load_top_level(config.toplevel);
         wam.configure_streams();
 
         wam

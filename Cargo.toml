@@ -69,11 +69,13 @@ reqwest = { version = "0.11.18", features = ["blocking"] }
 dashu = { git = "https://github.com/coasys/dashu.git"  }
 libffi = { git = "https://github.com/coasys/libffi-rs.git", branch = "windows-space" }
 rand = "0.8.5"
+regex = "1.9.1"
 
 [dev-dependencies]
 assert_cmd = "1.0.3"
 predicates-core = "1.0.2"
 serial_test = "0.5.1"
+maplit = "1.0.2"
 
 [patch.crates-io]
 modular-bitfield = { git = "https://github.com/mthom/modular-bitfield" }
