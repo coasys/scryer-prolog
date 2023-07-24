@@ -655,30 +655,30 @@ pub(crate) fn shr(n1: Number, n2: Number, arena: &mut Arena) -> Result<Number, M
             let n1 = Integer::from(n1_i);
 
             if let Ok(n2) = u32::try_from(n2_i) {
-                return Ok(Number::arena_from(n1 >> n2, arena));
+                return Ok(Number::arena_from(n1.to_u64().unwrap() >> n2, arena));
             } else {
-                return Ok(Number::arena_from(n1 >> u32::max_value(), arena));
+                return Ok(Number::arena_from(n1 >> usize::max_value(), arena));
             }
         }
         (Number::Fixnum(n1), Number::Integer(n2)) => {
             let n1 = Integer::from(n1.get_num());
 
             match n2.to_u32() {
-                Some(n2) => Ok(Number::arena_from(n1 >> n2, arena)),
-                _ => Ok(Number::arena_from(n1 >> u32::max_value(), arena)),
+                Some(n2) => Ok(Number::arena_from(n1.to_u64().unwrap() >> n2, arena)),
+                _ => Ok(Number::arena_from(n1 >> usize::max_value(), arena)),
             }
         }
         (Number::Integer(n1), Number::Fixnum(n2)) => match u32::try_from(n2.get_num()) {
-            Ok(n2) => Ok(Number::arena_from(Integer::from(&*n1 >> n2), arena)),
+            Ok(n2) => Ok(Number::arena_from(Integer::from(n1.to_u64().unwrap() >> n2), arena)),
             _ => Ok(Number::arena_from(
-                Integer::from(&*n1 >> u32::max_value()),
+                Integer::from(&*n1 >> usize::max_value()),
                 arena,
             )),
         },
         (Number::Integer(n1), Number::Integer(n2)) => match n2.to_u32() {
-            Some(n2) => Ok(Number::arena_from(Integer::from(&*n1 >> n2), arena)),
+            Some(n2) => Ok(Number::arena_from(Integer::from(n1.to_u64().unwrap() >> n2), arena)),
             _ => Ok(Number::arena_from(
-                Integer::from(&*n1 >> u32::max_value()),
+                Integer::from(&*n1 >> usize::max_value()),
                 arena,
             )),
         },
@@ -701,10 +701,10 @@ pub(crate) fn shl(n1: Number, n2: Number, arena: &mut Arena) -> Result<Number, M
 
             let n1 = Integer::from(n1_i);
 
-            if let Ok(n2) = u32::try_from(n2_i) {
+            if let Ok(n2) = usize::try_from(n2_i) {
                 return Ok(Number::arena_from(n1 << n2, arena));
             } else {
-                return Ok(Number::arena_from(n1 << u32::max_value(), arena));
+                return Ok(Number::arena_from(n1 << usize::max_value(), arena));
             }
         }
         (Number::Fixnum(n1), Number::Integer(n2)) => {
@@ -718,9 +718,9 @@ pub(crate) fn shl(n1: Number, n2: Number, arena: &mut Arena) -> Result<Number, M
             }
         }
         (Number::Integer(n1), Number::Fixnum(n2)) => match u32::try_from(n2.get_num()) {
-            Ok(n2) => Ok(Number::arena_from(Integer::from(&*n1 << n2), arena)),
+            Ok(n2) => Ok(Number::arena_from(Integer::from(n1.to_u64().unwrap() << n2), arena)),
             _ => Ok(Number::arena_from(
-                Integer::from(&*n1 << u32::max_value()),
+                Integer::from(&*n1 << usize::max_value()),
                 arena,
             )),
         },

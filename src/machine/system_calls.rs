@@ -35,7 +35,7 @@ use ordered_float::OrderedFloat;
 use fxhash::{FxBuildHasher, FxHasher};
 use indexmap::IndexSet;
 
-pub(crate) use ref_thread_local::RefThreadLocal;
+use ref_thread_local::{RefThreadLocal, ref_thread_local};
 
 use std::borrow::BorrowMut;
 use std::cell::Cell;
@@ -5139,8 +5139,9 @@ impl Machine {
 
     #[inline(always)]
     pub(crate) fn set_seed(&mut self) {
-        let seed = self.deref_register(1);
+        let seed = self.machine_st.deref(self.machine_st.registers[1]);
 
+        
         match Number::try_from(seed) {
             Ok(Number::Fixnum(n)) => {
                 let _: StdRng = SeedableRng::seed_from_u64(Integer::from(n).to_u64().unwrap());

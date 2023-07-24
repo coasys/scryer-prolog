@@ -11,6 +11,7 @@ use crate::parser::lexer::*;
 use std::cell::Cell;
 use std::mem;
 use std::ops::Neg;
+use std::rc::Rc;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum TokenType {
