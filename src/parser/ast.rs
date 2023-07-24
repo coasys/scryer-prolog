@@ -6,9 +6,9 @@ use crate::types::HeapCellValueTag;
 
 use std::cell::Cell;
 use std::fmt;
-use std::hash::Hash;
-use std::io::{Error as IOError};
-use std::ops::Neg;
+use std::hash::{Hash, Hasher};
+use std::io::Error as IOError;
+use std::ops::{Deref, Neg};
 use std::rc::Rc;
 use std::vec::Vec;
 
