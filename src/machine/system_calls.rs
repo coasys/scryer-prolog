@@ -1,6 +1,7 @@
 use crate::parser::ast::*;
 use crate::parser::parser::*;
 
+use dashu::integer::UBig;
 use lazy_static::lazy_static;
 
 use crate::arena::*;
@@ -23,22 +24,25 @@ use crate::machine::preprocessor::to_op_decl;
 use crate::machine::stack::*;
 use crate::machine::streams::*;
 use crate::parser::char_reader::*;
-use crate::parser::rug::Integer;
-use crate::parser::rug::rand::RandState;
+use crate::parser::dashu::Integer;
 use crate::read::*;
 use crate::types::*;
+use rand::{Rng, SeedableRng};
+use rand::rngs::StdRng;
 
 use ordered_float::OrderedFloat;
 
 use fxhash::{FxBuildHasher, FxHasher};
 use indexmap::IndexSet;
 
-use ref_thread_local::{RefThreadLocal, ref_thread_local};
+use ref_thread_local::RefThreadLocal;
 
+use std::borrow::BorrowMut;
 use std::cell::Cell;
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
-use std::convert::{TryFrom, Infallible};
+use std::convert::Infallible;
+use std::convert::TryFrom;
 use std::env;
 use std::fs;
 use std::hash::{BuildHasher, BuildHasherDefault};
@@ -86,10 +90,6 @@ use hyper::service::{make_service_fn, service_fn};
 use hyper_tls::HttpsConnector;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc::channel;
-
-ref_thread_local! {
-    pub(crate) static managed RANDOM_STATE: RandState<'static> = RandState::new();
-}
 
 pub(crate) fn get_key() -> KeyEvent {
     let key;
@@ -2334,7 +2334,7 @@ impl Machine {
                 // n has already been confirmed as an integer, and
                 // internally, Rational is assumed reduced, so its denominator
                 // must be 1.
-                r.numer().to_string()
+                r.numerator().to_string()
             }
             _ => {
                 unreachable!()
@@ -2363,7 +2363,7 @@ impl Machine {
                 // n has already been confirmed as an integer, and
                 // internally, Rational is assumed reduced, so its
                 // denominator must be 1.
-                r.numer().to_string()
+                r.numerator().to_string()
             }
             _ => {
                 unreachable!()
@@ -3764,10 +3764,25 @@ impl Machine {
     }
 
     #[inline(always)]
-    pub(crate) fn maybe(&mut self) {
+    pub(crate) fn maybe(&mut self) {        
+        fn generate_random_bits(num_bits: usize) -> u64 {
+            let mut rng = rand::thread_rng();
+            let rand = rng.borrow_mut();
+            let mut random_bits: u64 = 0;
+        
+            for _ in 0..num_bits {
+                random_bits <<= 1;
+        
+                if rand.gen_bool(0.5) {
+                    random_bits |= 1;
+                }
+            }
+        
+            random_bits
+        }
+
         let result = {
-            let mut rand = RANDOM_STATE.borrow_mut();
-            rand.bits(1) == 0
+            generate_random_bits(1) == 0
         };
 
         self.machine_st.fail = result;
@@ -4453,7 +4468,7 @@ impl Machine {
                 // n has already been confirmed as an integer, and
                 // internally, Rational is assumed reduced, so its
                 // denominator must be 1.
-                r.numer().to_i32().unwrap()
+                r.numerator().to_i32().unwrap()
             }
             _ => {
                 unreachable!()
@@ -5124,13 +5139,21 @@ impl Machine {
 
     #[inline(always)]
     pub(crate) fn set_seed(&mut self) {
-        let seed = self.machine_st.store(self.machine_st.deref(self.machine_st.registers[1]));
-        let mut rand = RANDOM_STATE.borrow_mut();
+        let seed = self.machine_st.deref(self.machine_st.registers[1]);
 
+        
         match Number::try_from(seed) {
-            Ok(Number::Fixnum(n)) => rand.seed(&Integer::from(n)),
-            Ok(Number::Integer(n)) => rand.seed(&*n),
-            Ok(Number::Rational(n)) if n.denom() == &1 => rand.seed(n.numer()),
+            Ok(Number::Fixnum(n)) => {
+                let _: StdRng = SeedableRng::seed_from_u64(Integer::from(n).to_u64().unwrap());
+            },
+            Ok(Number::Integer(n)) => {
+                let _: StdRng = SeedableRng::seed_from_u64(n.to_u64().unwrap());
+            },
+            Ok(Number::Rational(n)) => {
+                if n.denominator() == &UBig::from(1 as u32) {
+                    let _: StdRng = SeedableRng::seed_from_u64(n.numerator().to_u64().unwrap());
+                } 
+            },
             _ => {
                 self.machine_st.fail = true;
             }
@@ -5144,7 +5167,7 @@ impl Machine {
         let time = match Number::try_from(time) {
             Ok(Number::Float(n)) => n.into_inner(),
             Ok(Number::Fixnum(n)) => n.get_num() as f64,
-            Ok(Number::Integer(n)) => n.to_f64(),
+            Ok(Number::Integer(n)) => n.to_f64().value(),
             _ => {
                 unreachable!()
             }
@@ -6785,7 +6808,7 @@ impl Machine {
                 Number::Fixnum(Fixnum::build_with(n.get_num().count_ones() as i64))
             }
             Ok(Number::Integer(n)) => {
-                Number::arena_from(n.count_ones().unwrap(), &mut self.machine_st.arena)
+                Number::arena_from(n.count_ones(), &mut self.machine_st.arena)
             }
             _ => {
                 unreachable!()

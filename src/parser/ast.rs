@@ -7,12 +7,12 @@ use crate::types::HeapCellValueTag;
 use std::cell::Cell;
 use std::fmt;
 use std::hash::Hash;
-use std::io::{Error as IOError};
+use std::io::Error as IOError;
 use std::ops::Neg;
 use std::rc::Rc;
 use std::vec::Vec;
 
-use crate::parser::rug::{Integer, Rational};
+use crate::parser::dashu::{Integer, Rational};
 
 use fxhash::FxBuildHasher;
 use indexmap::IndexMap;
