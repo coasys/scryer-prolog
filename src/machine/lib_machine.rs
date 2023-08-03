@@ -1,9 +1,8 @@
 use std::collections::BTreeSet;
 
 use super::{
-    Machine, MachineConfig, QueryResult, QueryResolutionLine, 
-    Atom, AtomCell, HeapCellValue, HeapCellValueTag,
-    streams::Stream
+    streams::Stream, Atom, AtomCell, HeapCellValue, HeapCellValueTag, Machine, MachineConfig,
+    QueryResolutionLine, QueryResult,
 };
 
 impl Machine {
@@ -19,7 +18,8 @@ impl Machine {
     pub fn consult_module_string(&mut self, module_name: &str, program: String) {
         let stream = Stream::from_owned_string(program, &mut self.machine_st.arena);
         self.machine_st.registers[1] = stream_as_cell!(stream);
-        self.machine_st.registers[2] = atom_as_cell!(self.machine_st.atom_tbl.build_with(module_name));
+        self.machine_st.registers[2] =
+            atom_as_cell!(self.machine_st.atom_tbl.build_with(module_name));
 
         self.run_module_predicate(atom!("loader"), (atom!("consult_stream"), 2));
     }
@@ -67,7 +67,7 @@ impl Machine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::machine::{QueryMatch, Value, QueryResolution};
+    use crate::machine::{QueryMatch, QueryResolution, Value};
 
     #[test]
     fn programatic_query() {
@@ -115,7 +115,9 @@ mod tests {
         let output = machine.run_query(query);
         assert_eq!(
             output,
-            Err(String::from("error(existence_error(procedure,triple/3),triple/3)."))
+            Err(String::from(
+                "error(existence_error(procedure,triple/3),triple/3)."
+            ))
         );
     }
 
@@ -135,26 +137,30 @@ mod tests {
                 constructor(xyz, '[{action: "addLink", source: "this", predicate: "recipe://title", target: "literal://string:Meta%20Muffins"}]').
             "#.to_string());
 
-        let result = machine.run_query(String::from("subject_class(\"Todo\", C), constructor(C, Actions)."));
+        let result = machine.run_query(String::from(
+            "subject_class(\"Todo\", C), constructor(C, Actions).",
+        ));
         assert_eq!(
             result,
-            Ok(QueryResolution::Matches(vec![
-                QueryMatch::from(btreemap! {
+            Ok(QueryResolution::Matches(vec![QueryMatch::from(
+                btreemap! {
                     "C" => Value::from("c"),
                     "Actions" => Value::from("[{action: \"addLink\", source: \"this\", predicate: \"todo://state\", target: \"todo://ready\"}]"),
-                }),
-            ]))
+                }
+            ),]))
         );
 
-        let result = machine.run_query(String::from("subject_class(\"Recipe\", C), constructor(C, Actions)."));
+        let result = machine.run_query(String::from(
+            "subject_class(\"Recipe\", C), constructor(C, Actions).",
+        ));
         assert_eq!(
             result,
-            Ok(QueryResolution::Matches(vec![
-                QueryMatch::from(btreemap! {
+            Ok(QueryResolution::Matches(vec![QueryMatch::from(
+                btreemap! {
                     "C" => Value::from("xyz"),
                     "Actions" => Value::from("[{action: \"addLink\", source: \"this\", predicate: \"recipe://title\", target: \"literal://string:Meta%20Muffins\"}]"),
-                }),
-            ]))
+                }
+            ),]))
         );
 
         let result = machine.run_query(String::from("subject_class(Class, _)."));
@@ -170,7 +176,6 @@ mod tests {
             ]))
         );
     }
-
 
     #[test]
     fn consult() {
@@ -228,6 +233,5 @@ mod tests {
             machine.run_query(String::from(r#"triple("a","new","b")."#)),
             Ok(QueryResolution::True)
         );
-
     }
 }
