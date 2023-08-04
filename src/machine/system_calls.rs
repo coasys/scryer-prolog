@@ -3879,7 +3879,8 @@ impl Machine {
             let address_string = address_sink.as_str(); //to_string();
             let address: Uri = address_string.parse().unwrap();
 
-            let stream = self.runtime.block_on(async {
+            let runtime = tokio::runtime::Handle::current();
+            let stream = runtime.block_on(async {
                 let https = HttpsConnector::new();
                 let client = Client::builder()
                     .build::<_, hyper::Body>(https);
@@ -3960,7 +3961,8 @@ impl Machine {
 	    let (tx, rx) = channel(1);
 	    let tx = Arc::new(Mutex::new(tx));
 
-	    let _guard = self.runtime.enter();
+        let runtime = tokio::runtime::Handle::current();
+	    let _guard = runtime.enter();
 	    let server = match Server::try_bind(&addr) {
 		Ok(server) => server,
 		Err(_) => {
@@ -3968,7 +3970,7 @@ impl Machine {
 		}
 	    };
 
-	    self.runtime.spawn(async move {
+	    runtime.spawn(async move {
 		let make_svc = make_service_fn(move |_conn| {
 		    let tx = tx.clone();
 		    async move { Ok::<_, Infallible>(service_fn(move |req| http::serve_req(req, tx.clone()))) }
@@ -4031,7 +4033,8 @@ impl Machine {
 				let query_cell = string_as_cstr_cell!(query_atom);
 				
 				let hyper_req = request.request;
-				let buf = self.runtime.block_on(async {hyper::body::aggregate(hyper_req).await.unwrap()});
+                let runtime = tokio::runtime::Handle::current();
+				let buf = runtime.block_on(async {hyper::body::aggregate(hyper_req).await.unwrap()});
 				let reader = buf.reader();
 
 				let mut stream = Stream::from_http_stream(
