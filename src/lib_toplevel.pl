@@ -23,6 +23,19 @@ arg_type(t).
 arg_type(g(_)).
 arg_type(t(_)).
 
+eq_member(X, [Y|_])  :- X == Y, !.
+eq_member(X, [_|Ys]) :- eq_member(X, Ys).
+
+select_all([], _, _, [], []).
+select_all([OtherVar = OtherValue | Pairs], Var, Value, Vars, NewPairs) :-
+    (  OtherValue == Value ->
+       Vars = [OtherVar = OtherValue | Vars0],
+       select_all(Pairs, Var, Value, Vars0, NewPairs)
+    ;
+    NewPairs = [OtherVar = OtherValue | NewPairs0],
+    select_all(Pairs, Var, Value, Vars, NewPairs0)
+    ).
+
 trailing_period_is_ambiguous(Value) :-
     atom(Value),
     atom_chars(Value, ValueChars),
@@ -104,7 +117,7 @@ write_eq(G, VarList, MaxDepth) :-
 list_last_item([C], C) :- !.
 list_last_item([_|Cs], D) :-
     list_last_item(Cs, D).
-    
+
 term_variables_under_max_depth(Term, MaxDepth, Vars) :-
     '$term_variables_under_max_depth'(Term, MaxDepth, Vars).
 
