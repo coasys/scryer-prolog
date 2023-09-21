@@ -7,7 +7,7 @@ List manipulation predicates
 		          maplist/3, maplist/4, maplist/5, maplist/6,
 		          maplist/7, maplist/8, maplist/9, same_length/2, nth0/3, nth0/4, nth1/3, nth1/4,
 		          sum_list/2, transpose/2, list_to_set/2, list_max/2,
-                  list_min/2, permutation/2]).
+                  list_min/2, permutation/2, paginate/4]).
 
 /*  Author:        Mark Thom, Jan Wielemaker, and Richard O'Keefe
     Copyright (c)  2018-2021, Mark Thom
@@ -60,6 +60,25 @@ List manipulation predicates
 
 resource_error(Resource, Context) :-
    throw(error(resource_error(Resource), Context)).
+
+paginate(Data, PageNumber, PageSize, PageData) :-
+    PageNumber > 0,
+    PageSize > 0,
+    SkipCount is (PageNumber - 1) * PageSize,
+    skipN(Data, SkipCount, SkippedData),
+    takeN(SkippedData, PageSize, PageData).
+
+skipN(Data, 0, Data).
+skipN([_|Rest], N, SkippedData) :-
+    N > 0,
+    NextN is N - 1,
+    skipN(Rest, NextN, SkippedData).
+
+takeN(_, 0, []).
+takeN([Item|Rest], N, [Item|PageRest]) :-
+    N > 0,
+    NextN is N - 1,
+    takeN(Rest, NextN, PageRest).
 
 %% length(?Xs, ?N).
 %
