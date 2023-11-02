@@ -64,7 +64,9 @@ resource_error(Resource, Context) :-
 paginate(Data, PageNumber, PageSize, PageData) :-
     PageNumber > 0,
     PageSize > 0,
-    SkipCount is (PageNumber - 1) * PageSize,
+    length(Data, DataLength),
+    MaxSkip is max(0, DataLength - PageSize),
+    SkipCount is min((PageNumber - 1) * PageSize, MaxSkip),
     skipN(Data, SkipCount, SkippedData),
     takeN(SkippedData, PageSize, PageData).
 
