@@ -82,13 +82,17 @@ use base64;
 use roxmltree;
 use select;
 
+#[cfg(feature = "http")]
 use hyper::server::conn::http1;
+#[cfg(feature = "http")]
 use hyper::header::{HeaderValue, HeaderName};
+#[cfg(feature = "http")]
 use hyper::{HeaderMap, Method};
+#[cfg(feature = "http")]
 use http_body_util::BodyExt;
 use bytes::Buf;
 use reqwest::Url;
-use hyper_util::rt::TokioIo;
+// use hyper_util::rt::TokioIo;
 
 pub(crate) fn get_key() -> KeyEvent {
     let key;
@@ -4201,6 +4205,7 @@ impl Machine {
         Ok(())
     }
 
+    #[cfg(feature = "http")]
     #[inline(always)]
     pub(crate) fn http_open(&mut self) -> CallResult {
         let address_sink = self.deref_register(1);
@@ -4319,6 +4324,7 @@ impl Machine {
         Ok(())
     }
 
+    #[cfg(feature = "http")]
     #[inline(always)]
     pub(crate) fn http_listen(&mut self) -> CallResult {
         let address_sink = self.deref_register(1);
@@ -4371,6 +4377,7 @@ impl Machine {
 	Ok(())
     }
 
+    #[cfg(feature = "http")]
     #[inline(always)]
     pub(crate) fn http_accept(&mut self) -> CallResult {
 	let culprit = self.deref_register(1);
@@ -4455,6 +4462,7 @@ impl Machine {
 	Ok(())
     }
 
+    #[cfg(feature = "http")]
     #[inline(always)]
     pub(crate) fn http_answer(&mut self) -> CallResult {
 	let culprit = self.deref_register(1);

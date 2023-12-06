@@ -4242,34 +4242,42 @@ impl Machine {
                     step_or_fail!(self, self.machine_st.p = self.machine_st.cp);
                 }
                 &Instruction::CallHttpOpen => {
+                    #[cfg(feature = "http")]
                     try_or_throw!(self.machine_st, self.http_open());
                     step_or_fail!(self, self.machine_st.p += 1);
                 }
                 &Instruction::ExecuteHttpOpen => {
+                    #[cfg(feature = "http")]
                     try_or_throw!(self.machine_st, self.http_open());
                     step_or_fail!(self, self.machine_st.p = self.machine_st.cp);
                 }
 		&Instruction::CallHttpListen => {
+            #[cfg(feature = "http")]
 		    try_or_throw!(self.machine_st, self.http_listen());
 		    step_or_fail!(self, self.machine_st.p += 1);
 		}
 		&Instruction::ExecuteHttpListen => {
+            #[cfg(feature = "http")]
 		    try_or_throw!(self.machine_st, self.http_listen());
 		    step_or_fail!(self, self.machine_st.p = self.machine_st.cp);
 		}
 		&Instruction::CallHttpAccept => {
+            #[cfg(feature = "http")]
 		    try_or_throw!(self.machine_st, self.http_accept());
 		    step_or_fail!(self, self.machine_st.p += 1);
 		}
 		&Instruction::ExecuteHttpAccept => {
+            #[cfg(feature = "http")]
 		    try_or_throw!(self.machine_st, self.http_accept());
 		    step_or_fail!(self, self.machine_st.p = self.machine_st.cp);
 		}
 		&Instruction::CallHttpAnswer => {
+            #[cfg(feature = "http")]
 		    try_or_throw!(self.machine_st, self.http_answer());
 		    step_or_fail!(self, self.machine_st.p += 1);
 		}
 		&Instruction::ExecuteHttpAnswer => {
+            #[cfg(feature = "http")]
 		    try_or_throw!(self.machine_st, self.http_answer());
 		    step_or_fail!(self, self.machine_st.p = self.machine_st.cp);
 		}
