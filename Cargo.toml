@@ -61,7 +61,7 @@ sodiumoxide = "0.2.6"
 static_assertions = "1.1.0"
 ryu = "1.0.9"
 hyper = { version = "1.0.0-rc.4", features = ["full"] }
-hyper-util = { git = "https://github.com/hyperium/hyper-util.git" }
+hyper-util = { git = "https://github.com/coasys/hyper-util.git", rev = "47313ff16d6c3d416566150c0d1afc963f903671" }
 # hyper-util = { path = "../hyper-util" }
 tokio = { version = "1.28.2", features = ["full"] }
 futures = "0.3"
