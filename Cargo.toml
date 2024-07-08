@@ -16,7 +16,7 @@ rust-version = "1.77"
 crate-type = ["cdylib", "rlib"]
 
 [features]
-default = ["ffi", "repl", "hostname", "tls", "http", "crypto-full"]
+default = ["ffi", "repl", "hostname", "tls", "crypto-full"]
 ffi = ["dep:libffi"]
 repl = ["dep:crossterm", "dep:ctrlc", "dep:rustyline"]
 hostname = ["dep:hostname"]

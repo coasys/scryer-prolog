@@ -1116,13 +1116,13 @@ impl Stream {
                     }
                 }
             }
-	    Stream::HttpRead(stream_layout) => {
-		if stream_layout.stream.get_ref().body_reader.get_ref().has_remaining() {
-		    AtEndOfStream::Not
-		} else {
-		    AtEndOfStream::Past
-		}
-	    }
+	    // Stream::HttpRead(stream_layout) => {
+		// if stream_layout.stream.get_ref().body_reader.get_ref().has_remaining() {
+		//     AtEndOfStream::Not
+		// } else {
+		//     AtEndOfStream::Past
+		// }
+	    // }
             _ => AtEndOfStream::Not,
         }
     }
