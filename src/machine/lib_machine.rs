@@ -13,7 +13,7 @@ use indexmap::IndexMap;
 
 use super::{
     streams::Stream, Atom, AtomCell, HeapCellValue, HeapCellValueTag, Machine, MachineConfig,
-    QueryResolution, QueryResolutionLine, QueryResult, Value,
+    QueryResolutionLine, QueryResult, Value,
 };
 
 pub struct QueryState<'a> {
@@ -24,18 +24,17 @@ pub struct QueryState<'a> {
     called: bool,
 }
 
-// TODO: Should we panic if dropped before consuming the whole iterator?
-// Is there a way to clean the state of the machine from a interrupted partial query?
-//impl Drop for QueryState<'_> {
-//    fn drop() {
-//        // ???
-//    }
-//}
+impl Drop for QueryState<'_> {
+    fn drop(&mut self) {
+        // TODO: Is this the right way to clean the machine state even when we drop this without
+        // consuming the whole iteration?
+        self.machine.trust_me();
+    }
+}
 
 impl Iterator for QueryState<'_> {
     type Item = Result<QueryResolutionLine, String>;
 
-    // TODO: Find how to detect end of iteration
     fn next(&mut self) -> Option<Self::Item> {
         let var_names = &mut self.var_names;
         let term_write_result = &mut self.term;
@@ -43,7 +42,6 @@ impl Iterator for QueryState<'_> {
 
         // No more choicepoints, end iteration
         if self.called && machine.machine_st.b <= self.stub_b {
-            machine.trust_me();
             return None;
         }
 
@@ -643,24 +641,30 @@ mod tests {
     fn query_iterator_determinism() {
         let mut machine = Machine::new_lib();
 
-        let query = String::from(r#"X = 1."#);
-        let mut iterator = machine.run_query_iter(query);
+        {
+            let query = String::from(r#"X = 1."#);
+            let mut iterator = machine.run_query_iter(query);
 
-        iterator.next();
-        assert_eq!(iterator.next(), None);
+            iterator.next();
+            assert_eq!(iterator.next(), None);
+        }
 
-        let query = String::from(r#"X = 1 ; false."#);
-        let mut iterator = machine.run_query_iter(query);
+        {
+            let query = String::from(r#"X = 1 ; false."#);
+            let mut iterator = machine.run_query_iter(query);
 
-        iterator.next();
+            iterator.next();
 
-        assert_eq!(iterator.next(), Some(Ok(QueryResolutionLine::False)));
-        assert_eq!(iterator.next(), None);
+            assert_eq!(iterator.next(), Some(Ok(QueryResolutionLine::False)));
+            assert_eq!(iterator.next(), None);
+        }
 
-        let query = String::from(r#"false."#);
-        let mut iterator = machine.run_query_iter(query);
+        {
+            let query = String::from(r#"false."#);
+            let mut iterator = machine.run_query_iter(query);
 
-        assert_eq!(iterator.next(), Some(Ok(QueryResolutionLine::False)));
-        assert_eq!(iterator.next(), None);
+            assert_eq!(iterator.next(), Some(Ok(QueryResolutionLine::False)));
+            assert_eq!(iterator.next(), None);
+        }
     }
 }
