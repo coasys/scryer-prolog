@@ -639,6 +639,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn query_iterator_determinism() {
         let mut machine = Machine::new_lib();
 
@@ -667,6 +668,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn query_iterator_backtracking_when_no_variables() {
         let mut machine = Machine::new_lib();
 
