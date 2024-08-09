@@ -36,8 +36,8 @@ impl Iterator for QueryState<'_> {
     type Item = Result<QueryResolutionLine, String>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let var_names = &mut self.var_names;
-        let term_write_result = &mut self.term;
+        let var_names = &self.var_names;
+        let term_write_result = &self.term;
         let machine = &mut self.machine;
 
         // No more choicepoints, end iteration
@@ -83,6 +83,7 @@ impl Iterator for QueryState<'_> {
 
         if machine.machine_st.p == LIB_QUERY_SUCCESS {
             if term_write_result.var_dict.is_empty() {
+                self.machine.machine_st.backtrack();
                 return Some(Ok(QueryResolutionLine::True));
             }
         } else if machine.machine_st.p == BREAK_FROM_DISPATCH_LOOP_LOC {
@@ -642,16 +643,14 @@ mod tests {
         let mut machine = Machine::new_lib();
 
         {
-            let query = String::from(r#"X = 1."#);
-            let mut iterator = machine.run_query_iter(query);
+            let mut iterator = machine.run_query_iter("X = 1.".into());
 
             iterator.next();
             assert_eq!(iterator.next(), None);
         }
 
         {
-            let query = String::from(r#"X = 1 ; false."#);
-            let mut iterator = machine.run_query_iter(query);
+            let mut iterator = machine.run_query_iter("X = 1 ; false.".into());
 
             iterator.next();
 
@@ -660,11 +659,21 @@ mod tests {
         }
 
         {
-            let query = String::from(r#"false."#);
-            let mut iterator = machine.run_query_iter(query);
+            let mut iterator = machine.run_query_iter("false.".into());
 
             assert_eq!(iterator.next(), Some(Ok(QueryResolutionLine::False)));
             assert_eq!(iterator.next(), None);
         }
+    }
+
+    #[test]
+    fn query_iterator_backtracking_when_no_variables() {
+        let mut machine = Machine::new_lib();
+
+        let mut iterator = machine.run_query_iter("true;false.".into());
+
+        assert_eq!(iterator.next(), Some(Ok(QueryResolutionLine::True)));
+        assert_eq!(iterator.next(), Some(Ok(QueryResolutionLine::False)));
+        assert_eq!(iterator.next(), None);
     }
 }
