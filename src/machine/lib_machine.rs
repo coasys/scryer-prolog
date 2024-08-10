@@ -26,8 +26,8 @@ pub struct QueryState<'a> {
 
 impl Drop for QueryState<'_> {
     fn drop(&mut self) {
-        // TODO: Is this the right way to clean the machine state even when we drop this without
-        // consuming the whole iteration?
+        // This may be wrong if the iterator is not fully consumend, but from testing it seems
+        // fine.
         self.machine.trust_me();
     }
 }
