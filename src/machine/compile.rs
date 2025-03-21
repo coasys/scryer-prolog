@@ -1331,12 +1331,12 @@ impl<'a, LS: LoadState<'a>> Loader<'a, LS> {
             );
         }
 
-        print_overwrite_warning(
-            &predicates.compilation_target,
-            code_index.get(),
-            key,
-            settings.is_dynamic(),
-        );
+        // print_overwrite_warning(
+        //     &predicates.compilation_target,
+        //     code_index.get(),
+        //     key,
+        //     settings.is_dynamic(),
+        // );
 
         let index_ptr = if settings.is_dynamic() {
             IndexPtr::dynamic_index(code_ptr)
