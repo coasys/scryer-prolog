@@ -41,7 +41,6 @@ use indexmap::IndexSet;
 
 use std::cell::Cell;
 use std::cmp::Ordering;
-use std::collections::BTreeSet;
 use std::convert::TryFrom;
 use std::env;
 #[cfg(feature = "ffi")]
@@ -55,7 +54,6 @@ use std::mem;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::net::{TcpListener, TcpStream};
 use std::num::NonZeroU32;
-use std::ops::Sub;
 use std::process;
 #[cfg(feature = "http")]
 use std::str::FromStr;
@@ -93,6 +91,8 @@ use roxmltree;
 use futures::future;
 #[cfg(feature = "http")]
 use reqwest::Url;
+use tokio::runtime::Handle;
+use tokio::task;
 #[cfg(feature = "http")]
 use warp::hyper::header::{HeaderName, HeaderValue};
 #[cfg(feature = "http")]
@@ -103,6 +103,50 @@ use warp::{Buf, Filter};
 use super::libraries;
 use super::preprocessor::to_op_decl;
 use super::preprocessor::to_op_decl_spec;
+
+/// Represents the presence (or absence) of a `module:` prefix to predicates, used to
+/// refer to predicates defined in a given `module` that haven't been imported
+/// (through `use_module/1`) or exported.
+///
+/// On the Rust side, [`MachineState::strip_module`] splits a given [`HeapCellValue`] into
+/// a pair of [`ModuleQuantification`] and `HeapCellValue`.
+///
+/// On the Prolog side, `strip_module(X, Y, Z)` is a wrapper around [`MachineState::strip_module`],
+/// which takes care of splitting the `X = module:predicate` pair into `Y = module` and
+/// `Z = predicate`. If no module prefix is present (ie. [`MachineState::strip_module`] returned
+/// `Unspecified`), then `strip_module/3` calls `load_context(Y)`, unifying `Y` with the currently
+/// loaded module (or `user`).
+///
+/// [`Machine::quantification_to_module_name`] provides a similar mechanism on the Rust side to
+/// obtain the currently loaded module in the `Unspecified` case.
+/// It also defaults to `user`, for instance if we are in the REPL.
+#[derive(Debug)]
+pub(crate) enum ModuleQuantification {
+    Specified(HeapCellValue),
+    Unspecified,
+}
+
+impl ModuleQuantification {
+    fn to_functor(&self) -> (Vec<HeapCellValue>, HeapCellValueTag) {
+        match self {
+            &ModuleQuantification::Specified(cell) => (
+                functor!(atom!("specified"), [cell(cell)]),
+                HeapCellValueTag::Str,
+            ),
+            ModuleQuantification::Unspecified => {
+                (functor!(atom!("unspecified")), HeapCellValueTag::Var)
+            }
+        }
+    }
+
+    #[inline]
+    fn specified(&self) -> Option<HeapCellValue> {
+        match self {
+            &ModuleQuantification::Specified(cell) => Some(cell),
+            ModuleQuantification::Unspecified => None,
+        }
+    }
+}
 
 #[cfg(feature = "repl")]
 pub(crate) fn get_key() -> KeyEvent {
@@ -1101,8 +1145,9 @@ impl MachineState {
     pub(crate) fn strip_module(
         &self,
         mut qualified_goal: HeapCellValue,
-        mut module_loc: HeapCellValue,
-    ) -> (HeapCellValue, HeapCellValue) {
+    ) -> (ModuleQuantification, HeapCellValue) {
+        let mut module_quantification = ModuleQuantification::Unspecified;
+
         loop {
             read_heap_cell!(qualified_goal,
                 (HeapCellValueTag::Str, s) => {
@@ -1110,7 +1155,12 @@ impl MachineState {
                         .get_name_and_arity();
 
                     if name == atom!(":") && arity == 2 {
-                        module_loc = self.heap[s+1];
+                        let module_loc = self.heap[s+1];
+
+                        module_quantification = ModuleQuantification::Specified(
+                            module_loc,
+                        );
+
                         qualified_goal = self.heap[s+2];
                     } else {
                         break;
@@ -1129,7 +1179,7 @@ impl MachineState {
             );
         }
 
-        (module_loc, qualified_goal)
+        (module_quantification, qualified_goal)
     }
 }
 
@@ -1274,17 +1324,40 @@ impl Machine {
             .store(self.machine_st.deref(self.machine_st.registers[i]))
     }
 
+    fn quantification_to_module_name(
+        &mut self,
+        quantification: ModuleQuantification,
+    ) -> Result<Atom, MachineError> {
+        match quantification.specified() {
+            Some(module_name) => {
+                let module_name = self.machine_st.store(self.machine_st.deref(module_name));
+
+                read_heap_cell!(module_name,
+                    (HeapCellValueTag::Atom, (module_name, _arity)) => {
+                        Ok(module_name)
+                    }
+                    (HeapCellValueTag::Var) => {
+                        Err(self.machine_st.instantiation_error())
+                    }
+                    _ => {
+                        Err(self.machine_st.type_error(ValidType::Atom, module_name))
+                    }
+                )
+            }
+            None => Ok(if let Some(load_context) = self.load_contexts.last() {
+                load_context.module
+            } else {
+                atom!("user")
+            }),
+        }
+    }
+
     #[inline(always)]
     pub(crate) fn fast_call(
         &mut self,
         arity: usize,
         call_at_index: impl Fn(&mut Machine, Atom, usize, IndexPtr) -> CallResult,
     ) -> CallResult {
-        let arity = arity - 1;
-        let (mut module_name, mut goal) = self
-            .machine_st
-            .strip_module(self.machine_st.registers[1], heap_loc_as_cell!(0));
-
         let load_registers = |machine_st: &mut MachineState,
                               goal: HeapCellValue,
                               goal_arity: usize| {
@@ -1310,9 +1383,14 @@ impl Machine {
             )
         };
 
+        let arity = arity - 1;
+        let (mut module_quantification, mut goal) =
+            self.machine_st.strip_module(self.machine_st.registers[1]);
+
         let (mut name, mut goal_arity, index_cell_opt) = read_heap_cell!(goal,
             (HeapCellValueTag::Str, s) => {
-                let (name, arity) = cell_as_atom_cell!(self.machine_st.heap[s]).get_name_and_arity();
+                let (name, arity) = cell_as_atom_cell!(self.machine_st.heap[s])
+                    .get_name_and_arity();
 
                 (name, arity, if self.machine_st.heap.len() > s + arity + 1 {
                     get_structure_index(self.machine_st.heap[s + arity + 1])
@@ -1331,54 +1409,50 @@ impl Machine {
         );
 
         let mut arity = arity + goal_arity;
+        let mut module_name = self
+            .quantification_to_module_name(module_quantification)
+            .map_err(|err| {
+                let stub = functor_stub(atom!("call"), arity);
+                self.machine_st.error_form(err, stub)
+            })?;
 
-        let index_cell = index_cell_opt.or_else(|| {
+        let index_cell = if index_cell_opt.is_some() {
+            index_cell_opt
+        } else {
             let is_internal_call = name == atom!("$call") && goal_arity > 0;
-
-            if !is_internal_call {
-                let module_name = if module_name.get_tag() == HeapCellValueTag::Atom {
-                    cell_as_atom!(module_name)
-                } else {
-                    atom!("user")
-                };
-
-                if self
-                    .indices
-                    .goal_expansion_defined((name, arity), module_name)
-                {
-                    return None;
-                }
-            }
 
             if is_internal_call {
                 debug_assert_eq!(goal.get_tag(), HeapCellValueTag::Str);
                 goal = self.machine_st.heap[goal.get_value() as usize + 1];
-                (module_name, goal) = self.machine_st.strip_module(goal, module_name);
+
+                (module_quantification, goal) = self.machine_st.strip_module(goal);
 
                 if let Some((inner_name, inner_arity)) =
                     self.machine_st.name_and_arity_from_heap(goal)
                 {
+                    module_name = self
+                        .quantification_to_module_name(module_quantification)
+                        .unwrap_or(module_name);
+
                     arity -= goal_arity;
                     (name, goal_arity) = (inner_name, inner_arity);
                     arity += goal_arity;
-                } else {
-                    return None;
-                }
-            }
 
-            let module_name = if module_name.get_tag() != HeapCellValueTag::Atom {
-                if let Some(load_context) = self.load_contexts.last() {
-                    load_context.module
+                    self.indices
+                        .get_predicate_code_index(name, arity, module_name)
                 } else {
-                    atom!("user")
+                    None
                 }
+            } else if self
+                .indices
+                .goal_expansion_defined((name, arity), module_name)
+            {
+                None
             } else {
-                cell_as_atom!(module_name)
-            };
-
-            self.indices
-                .get_predicate_code_index(name, arity, module_name)
-        });
+                self.indices
+                    .get_predicate_code_index(name, arity, module_name)
+            }
+        };
 
         if let Some(code_index) = index_cell {
             if !code_index.is_undefined() {
@@ -1441,12 +1515,17 @@ impl Machine {
                     post_supp_args
                         .zip(supp_vars.iter())
                         .all(|(arg_term, supp_var)| {
-                            let (module_loc, arg_term) = self.machine_st.strip_module(
-                                arg_term,
-                                heap_loc_as_cell!(0),
-                            );
+                            let (quantification, arg_term) = self.machine_st.strip_module(arg_term);
 
-                            if (module_loc.is_var() || module_loc == atom_as_cell!(atom!("user"))) && arg_term.is_var() && supp_var.is_var() {
+                            let is_simple_module_quantification = match quantification {
+                                ModuleQuantification::Unspecified => true,
+                                ModuleQuantification::Specified(module_name) => {
+                                    let module_name = self.machine_st.store(self.machine_st.deref(module_name));
+                                    module_name == atom_as_cell!(atom!("user"))
+                                }
+                            };
+
+                            if is_simple_module_quantification && arg_term.is_var() && supp_var.is_var() {
                                 return arg_term == *supp_var;
                             }
 
@@ -1581,9 +1660,8 @@ impl Machine {
 
     #[inline(always)]
     pub(crate) fn is_expanded_or_inlined(&self) -> bool {
-        let (_module_loc, qualified_goal) = self
-            .machine_st
-            .strip_module(self.machine_st.registers[1], empty_list_as_cell!());
+        let (_quantification, qualified_goal) =
+            self.machine_st.strip_module(self.machine_st.registers[1]);
 
         if HeapCellValueTag::Str == qualified_goal.get_tag() {
             let s = qualified_goal.get_value() as usize;
@@ -1613,13 +1691,19 @@ impl Machine {
 
     #[inline(always)]
     pub(crate) fn strip_module(&mut self) {
-        let (module_loc, qualified_goal) = self
-            .machine_st
-            .strip_module(self.machine_st.registers[1], self.machine_st.registers[2]);
+        let (module_quantification, qualified_goal) =
+            self.machine_st.strip_module(self.machine_st.registers[1]);
 
         let target_module_loc = self.machine_st.registers[2];
 
-        unify_fn!(&mut self.machine_st, module_loc, target_module_loc);
+        let (functor_stub, ref_cell_tag) = module_quantification.to_functor();
+
+        let h = self.machine_st.heap.len();
+        let ref_cell = HeapCellValue::build_with(ref_cell_tag, h as u64);
+
+        self.machine_st.heap.extend(functor_stub);
+
+        unify_fn!(&mut self.machine_st, ref_cell, target_module_loc);
 
         let target_qualified_goal = self.machine_st.registers[3];
 
@@ -1692,20 +1776,15 @@ impl Machine {
                 debug_assert_eq!(_arity, 0);
                 module_name
             }
-            _ if module_name.is_var() => {
-                if let Some(load_context) = self.load_contexts.last() {
-                    load_context.module
-                } else {
-                    atom!("user")
-                }
-            }
             _ => {
                 let h = self.machine_st.heap.len();
                 let call_form = functor!(atom!(":"), [cell(module_name), cell(self.machine_st.registers[2])]);
+
                 self.machine_st.heap.extend(call_form);
 
+                let err  = self.machine_st.type_error(ValidType::Callable, str_loc_as_cell!(h));
                 let stub = functor_stub(atom!("call"), narity + 1);
-                let err = self.machine_st.type_error(ValidType::Callable, str_loc_as_cell!(h));
+
                 return Err(self.machine_st.error_form(err, stub));
             }
         );
@@ -2464,7 +2543,7 @@ impl Machine {
 
         let mut stream = self.machine_st.get_stream_or_alias(
             self.machine_st.registers[1],
-            &self.indices.stream_aliases,
+            &self.indices,
             atom!("peek_byte"),
             2,
         )?;
@@ -2555,7 +2634,7 @@ impl Machine {
 
         let mut stream = self.machine_st.get_stream_or_alias(
             self.machine_st.registers[1],
-            &self.indices.stream_aliases,
+            &self.indices,
             atom!("peek_char"),
             2,
         )?;
@@ -2647,7 +2726,7 @@ impl Machine {
 
         let mut stream = self.machine_st.get_stream_or_alias(
             self.machine_st.registers[1],
-            &self.indices.stream_aliases,
+            &self.indices,
             atom!("peek_code"),
             2,
         )?;
@@ -3068,7 +3147,7 @@ impl Machine {
     pub(crate) fn put_code(&mut self) -> CallResult {
         let mut stream = self.machine_st.get_stream_or_alias(
             self.machine_st.registers[1],
-            &self.indices.stream_aliases,
+            &self.indices,
             atom!("put_code"),
             2,
         )?;
@@ -3120,7 +3199,7 @@ impl Machine {
     pub(crate) fn put_char(&mut self) -> CallResult {
         let mut stream = self.machine_st.get_stream_or_alias(
             self.machine_st.registers[1],
-            &self.indices.stream_aliases,
+            &self.indices,
             atom!("put_char"),
             2,
         )?;
@@ -3164,7 +3243,7 @@ impl Machine {
     pub(crate) fn put_chars(&mut self) -> CallResult {
         let mut stream = self.machine_st.get_stream_or_alias(
             self.machine_st.registers[1],
-            &self.indices.stream_aliases,
+            &self.indices,
             atom!("$put_chars"),
             2,
         )?;
@@ -3213,7 +3292,7 @@ impl Machine {
     pub(crate) fn put_byte(&mut self) -> CallResult {
         let mut stream = self.machine_st.get_stream_or_alias(
             self.machine_st.registers[1],
-            &self.indices.stream_aliases,
+            &self.indices,
             atom!("put_byte"),
             2,
         )?;
@@ -3280,7 +3359,7 @@ impl Machine {
     pub(crate) fn get_byte(&mut self) -> CallResult {
         let mut stream = self.machine_st.get_stream_or_alias(
             self.machine_st.registers[1],
-            &self.indices.stream_aliases,
+            &self.indices,
             atom!("get_byte"),
             2,
         )?;
@@ -3365,7 +3444,7 @@ impl Machine {
     pub(crate) fn get_char(&mut self) -> CallResult {
         let mut stream = self.machine_st.get_stream_or_alias(
             self.machine_st.registers[1],
-            &self.indices.stream_aliases,
+            &self.indices,
             atom!("get_char"),
             2,
         )?;
@@ -3460,7 +3539,7 @@ impl Machine {
     pub(crate) fn get_n_chars(&mut self) -> CallResult {
         let stream = self.machine_st.get_stream_or_alias(
             self.machine_st.registers[1],
-            &self.indices.stream_aliases,
+            &self.indices,
             atom!("get_n_chars"),
             3,
         )?;
@@ -3529,7 +3608,7 @@ impl Machine {
     pub(crate) fn get_code(&mut self) -> CallResult {
         let mut stream = self.machine_st.get_stream_or_alias(
             self.machine_st.registers[1],
-            &self.indices.stream_aliases,
+            &self.indices,
             atom!("get_code"),
             2,
         )?;
@@ -3636,19 +3715,11 @@ impl Machine {
 
     #[inline(always)]
     pub(crate) fn first_stream(&mut self) {
-        let mut first_stream = None;
-        let mut null_streams = BTreeSet::new();
-
-        for stream in self.indices.streams.iter().cloned() {
-            if !stream.is_null_stream() {
-                first_stream = Some(stream);
-                break;
-            } else {
-                null_streams.insert(stream);
-            }
-        }
-
-        self.indices.streams = self.indices.streams.sub(&null_streams);
+        let first_stream = self
+            .indices
+            .iter_streams(..)
+            .filter(|s| !s.is_null_stream())
+            .next();
 
         if let Some(first_stream) = first_stream {
             let stream = stream_as_cell!(first_stream);
@@ -3664,20 +3735,12 @@ impl Machine {
     #[inline(always)]
     pub(crate) fn next_stream(&mut self) {
         let prev_stream = cell_as_stream!(self.deref_register(1));
-
-        let mut next_stream = None;
-        let mut null_streams = BTreeSet::new();
-
-        for stream in self.indices.streams.range(prev_stream..).skip(1).cloned() {
-            if !stream.is_null_stream() {
-                next_stream = Some(stream);
-                break;
-            } else {
-                null_streams.insert(stream);
-            }
-        }
-
-        self.indices.streams = self.indices.streams.sub(&null_streams);
+        let next_stream = self
+            .indices
+            .iter_streams(prev_stream..)
+            .filter(|s| !s.is_null_stream())
+            .skip(1)
+            .next();
 
         if let Some(next_stream) = next_stream {
             let var = self.deref_register(2).as_var().unwrap();
@@ -3693,7 +3756,7 @@ impl Machine {
     pub(crate) fn flush_output(&mut self) -> CallResult {
         let mut stream = self.machine_st.get_stream_or_alias(
             self.machine_st.registers[1],
-            &self.indices.stream_aliases,
+            &self.indices,
             atom!("flush_output"),
             1,
         )?;
@@ -3780,7 +3843,7 @@ impl Machine {
     pub(crate) fn close(&mut self) -> CallResult {
         let mut stream = self.machine_st.get_stream_or_alias(
             self.machine_st.registers[1],
-            &self.indices.stream_aliases,
+            &self.indices,
             atom!("close"),
             2,
         )?;
@@ -3789,47 +3852,22 @@ impl Machine {
             stream.flush().unwrap(); // 8.11.6.1b)
         }
 
-        self.indices.streams.remove(&stream);
-
-        if stream == self.user_input {
-            self.user_input = self
-                .indices
-                .stream_aliases
-                .get(&atom!("user_input"))
-                .cloned()
-                .unwrap();
-
-            self.indices.streams.insert(self.user_input);
-        } else if stream == self.user_output {
-            self.user_output = self
-                .indices
-                .stream_aliases
-                .get(&atom!("user_output"))
-                .cloned()
-                .unwrap();
-
-            self.indices.streams.insert(self.user_output);
+        if stream == self.user_input || stream == self.user_output || stream.is_stderr() {
+            // stdin, stdout and stderr shouldn't be removed from the store, so return now
+            return Ok(());
         }
 
-        if !stream.is_stdin() && !stream.is_stdout() && !stream.is_stderr() {
-            if let Some(alias) = stream.options().get_alias() {
-                self.indices.stream_aliases.swap_remove(&alias);
-            }
+        self.indices.remove_stream(stream);
 
-            let close_result = stream.close();
+        stream.close().map_err(|_| {
+            let stub = functor_stub(atom!("close"), 1);
+            let addr = stream_as_cell!(stream);
+            let err = self
+                .machine_st
+                .existence_error(ExistenceError::Stream(addr));
 
-            if close_result.is_err() {
-                let stub = functor_stub(atom!("close"), 1);
-                let addr = stream_as_cell!(stream);
-                let err = self
-                    .machine_st
-                    .existence_error(ExistenceError::Stream(addr));
-
-                return Err(self.machine_st.error_form(err, stub));
-            }
-        }
-
-        Ok(())
+            self.machine_st.error_form(err, stub)
+        })
     }
 
     #[inline(always)]
@@ -4158,6 +4196,63 @@ impl Machine {
     }
 
     #[inline(always)]
+    pub(crate) fn random_integer(&mut self) {
+        let a1 = self.deref_register(1);
+        let a2 = self.deref_register(2);
+        let value = match (Number::try_from(a1), Number::try_from(a2)) {
+            (Ok(Number::Fixnum(lower)), Ok(Number::Fixnum(upper))) => {
+                let (lower, upper) = (lower.get_num(), upper.get_num());
+                if lower >= upper {
+                    self.machine_st.fail = true;
+                    return;
+                }
+                let value = self.rng.gen_range(lower..upper);
+                Number::Fixnum(Fixnum::build_with(value))
+            }
+            (Ok(Number::Fixnum(lower)), Ok(Number::Integer(upper))) => {
+                let lower = Integer::from(lower);
+                if lower >= *upper {
+                    self.machine_st.fail = true;
+                    return;
+                }
+                let value = self.rng.gen_range(lower..(*upper).clone());
+                Number::arena_from(value, &mut self.machine_st.arena)
+            }
+            (Ok(Number::Integer(lower)), Ok(Number::Fixnum(upper))) => {
+                let upper = Integer::from(upper);
+                if *lower >= upper {
+                    self.machine_st.fail = true;
+                    return;
+                }
+                let value = self.rng.gen_range((*lower).clone()..upper);
+                Number::arena_from(value, &mut self.machine_st.arena)
+            }
+            (Ok(Number::Integer(lower)), Ok(Number::Integer(upper))) => {
+                if *lower >= *upper {
+                    self.machine_st.fail = true;
+                    return;
+                }
+                let value = self.rng.gen_range((*lower).clone()..(*upper).clone());
+                Number::arena_from(value, &mut self.machine_st.arena)
+            }
+            _ => {
+                self.machine_st.fail = true;
+                return;
+            }
+        };
+        let a3 = self.deref_register(3);
+        match value {
+            Number::Fixnum(n) => {
+                self.machine_st.unify_fixnum(n, a3);
+            }
+            Number::Integer(n) => {
+                self.machine_st.unify_big_int(n, a3);
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[inline(always)]
     pub(crate) fn maybe(&mut self) {
         self.machine_st.fail = self.rng.gen();
     }
@@ -4285,66 +4380,70 @@ impl Machine {
             }
 
             // do it!
-            match futures::executor::block_on(req.send()) {
-                Ok(resp) => {
-                    // status code
-                    let status = resp.status().as_u16();
-                    self.machine_st
-                        .unify_fixnum(Fixnum::build_with(status as i64), address_status);
-                    // headers
-                    let headers: Vec<HeapCellValue> = resp
-                        .headers()
-                        .iter()
-                        .map(|(header_name, header_value)| {
-                            let h = self.machine_st.heap.len();
+            task::block_in_place(move || {
+                match Handle::current().block_on(req.send()) {
+                    Ok(resp) => {
+                        // status code
+                        let status = resp.status().as_u16();
+                        self.machine_st
+                            .unify_fixnum(Fixnum::build_with(status as i64), address_status);
+                        // headers
+                        let headers: Vec<HeapCellValue> = resp
+                            .headers()
+                            .iter()
+                            .map(|(header_name, header_value)| {
+                                let h = self.machine_st.heap.len();
 
-                            let header_term = functor!(
-                                AtomTable::build_with(
-                                    &self.machine_st.atom_tbl,
-                                    header_name.as_str()
-                                ),
-                                [cell(string_as_cstr_cell!(AtomTable::build_with(
-                                    &self.machine_st.atom_tbl,
-                                    header_value.to_str().unwrap()
-                                )))]
-                            );
+                                let header_term = functor!(
+                                    AtomTable::build_with(
+                                        &self.machine_st.atom_tbl,
+                                        header_name.as_str()
+                                    ),
+                                    [cell(string_as_cstr_cell!(AtomTable::build_with(
+                                        &self.machine_st.atom_tbl,
+                                        header_value.to_str().unwrap()
+                                    )))]
+                                );
 
-                            self.machine_st.heap.extend(header_term);
-                            str_loc_as_cell!(h)
-                        })
-                        .collect();
+                                self.machine_st.heap.extend(header_term);
+                                str_loc_as_cell!(h)
+                            })
+                            .collect();
 
-                    let headers_list =
-                        iter_to_heap_list(&mut self.machine_st.heap, headers.into_iter());
-                    unify!(
-                        self.machine_st,
-                        heap_loc_as_cell!(headers_list),
-                        self.machine_st.registers[6]
-                    );
-                    // body
-                    let reader = futures::executor::block_on(resp.bytes()).unwrap().reader();
+                        let headers_list =
+                            iter_to_heap_list(&mut self.machine_st.heap, headers.into_iter());
 
-                    let mut stream = Stream::from_http_stream(
-                        AtomTable::build_with(&self.machine_st.atom_tbl, &address_string),
-                        reader,
-                        &mut self.machine_st.arena,
-                    );
-                    *stream.options_mut() = StreamOptions::default();
-                    if let Some(alias) = stream.options().get_alias() {
-                        self.indices.stream_aliases.insert(alias, stream);
+                        unify!(
+                            self.machine_st,
+                            heap_loc_as_cell!(headers_list),
+                            self.machine_st.registers[6]
+                        );
+
+                        // body
+                        let reader = futures::executor::block_on(resp.bytes()).unwrap().reader();
+
+                        let mut stream = Stream::from_http_stream(
+                            AtomTable::build_with(&self.machine_st.atom_tbl, &address_string),
+                            reader,
+                            &mut self.machine_st.arena,
+                        );
+                        *stream.options_mut() = StreamOptions::default();
+
+                        self.indices
+                            .add_stream(stream, atom!("http_open"), 3)
+                            .map_err(|stub_gen| stub_gen(&mut self.machine_st))
+                            .unwrap();
+
+                        let stream = stream_as_cell!(stream);
+
+                        let stream_addr = self.deref_register(2);
+                        self.machine_st.bind(stream_addr.as_var().unwrap(), stream);
                     }
-
-                    self.indices.streams.insert(stream);
-
-                    let stream = stream_as_cell!(stream);
-
-                    let stream_addr = self.deref_register(2);
-                    self.machine_st.bind(stream_addr.as_var().unwrap(), stream);
+                    Err(_) => {
+                        self.machine_st.fail = true;
+                    }
                 }
-                Err(_) => {
-                    self.machine_st.fail = true;
-                }
-            }
+            });
         } else {
             let err = self
                 .machine_st
@@ -4552,7 +4651,10 @@ impl Machine {
                 );
                 *stream.options_mut() = StreamOptions::default();
                 stream.options_mut().set_stream_type(StreamType::Binary);
-                self.indices.streams.insert(stream);
+
+                self.indices.add_stream(stream, atom!("http_accept"), 7)
+                    .map_err(|stub_gen| stub_gen(&mut self.machine_st))?;
+
                 let stream = stream_as_cell!(stream);
 
                                 let handle: TypedArenaPtr<HttpResponse> = arena_alloc!(request.response, &mut self.machine_st.arena);
@@ -4666,7 +4768,11 @@ impl Machine {
                 );
                 *stream.options_mut() = StreamOptions::default();
                 stream.options_mut().set_stream_type(StreamType::Binary);
-                self.indices.streams.insert(stream);
+
+
+                self.indices.add_stream(stream, atom!("http_answer"), 4)
+                    .map_err(|stub_gen| stub_gen(&mut self.machine_st))?;
+
                 let stream = stream_as_cell!(stream);
                 self.machine_st.bind(stream_addr.as_var().unwrap(), stream);
                 }
@@ -4981,11 +5087,10 @@ impl Machine {
                     .stream_from_file_spec(file_spec, &mut self.indices, &options)?;
 
             *stream.options_mut() = options;
-            self.indices.streams.insert(stream);
 
-            if let Some(alias) = stream.options().get_alias() {
-                self.indices.stream_aliases.insert(alias, stream);
-            }
+            self.indices
+                .add_stream(stream, atom!("open"), 4)
+                .map_err(|stub_gen| stub_gen(&mut self.machine_st))?;
 
             let stream_var = self.deref_register(3);
             self.machine_st
@@ -5064,9 +5169,9 @@ impl Machine {
 
     #[inline(always)]
     pub(crate) fn set_stream_options(&mut self) -> CallResult {
-        let mut stream = self.machine_st.get_stream_or_alias(
+        let stream = self.machine_st.get_stream_or_alias(
             self.machine_st.registers[1],
-            &self.indices.stream_aliases,
+            &self.indices,
             atom!("open"),
             4,
         )?;
@@ -5076,10 +5181,12 @@ impl Machine {
         let reposition = self.machine_st.registers[4];
         let stream_type = self.machine_st.registers[5];
 
-        let options =
+        let new_options =
             self.machine_st
                 .get_stream_options(alias, eof_action, reposition, stream_type);
-        *stream.options_mut() = options;
+        self.indices.update_stream_options(stream, |options| {
+            *options = new_options;
+        });
 
         Ok(())
     }
@@ -5144,9 +5251,7 @@ impl Machine {
                     // at the end of the list, no match found in this case.
                     self.machine_st.fail = true;
                 } else {
-                    let (_, qualified_goal) = self
-                        .machine_st
-                        .strip_module(list_head, empty_list_as_cell!());
+                    let (_, qualified_goal) = self.machine_st.strip_module(list_head);
 
                     unify!(self.machine_st, qualified_goal, attr);
                 }
@@ -5342,16 +5447,16 @@ impl Machine {
                         list_head = self.machine_st.heap[h];
                     }
                     (HeapCellValueTag::Str | HeapCellValueTag::Atom) => {
-                        let (module_loc, qualified_goal) = self.machine_st.strip_module(
-                            list_head,
-                            empty_list_as_cell!(),
-                        );
+                        let (quantification, qualified_goal) = self.machine_st.strip_module(list_head);
 
                         let (t_name, t_arity) = self.machine_st
                             .name_and_arity_from_heap(qualified_goal)
                             .unwrap();
 
-                        if module == module_loc && name == t_name && arity == t_arity {
+                        if Some(module) == quantification.specified() &&
+                            name == t_name &&
+                            arity == t_arity
+                        {
                             return Some(AttrListMatch {
                                 match_site: MatchSite::Match(attrs_list.get_value() as usize),
                                 prev_tail,
@@ -5824,12 +5929,9 @@ impl Machine {
     pub(crate) fn set_input(&mut self) -> CallResult {
         let addr = self.deref_register(1);
 
-        let stream = self.machine_st.get_stream_or_alias(
-            addr,
-            &self.indices.stream_aliases,
-            atom!("set_input"),
-            1,
-        )?;
+        let stream =
+            self.machine_st
+                .get_stream_or_alias(addr, &self.indices, atom!("set_input"), 1)?;
 
         if !stream.is_input_stream() {
             let stub = functor_stub(atom!("set_input"), 1);
@@ -5845,18 +5947,16 @@ impl Machine {
         }
 
         self.user_input = stream;
+        self.indices.set_stream(atom!("user_input"), stream);
         Ok(())
     }
 
     #[inline(always)]
     pub(crate) fn set_output(&mut self) -> CallResult {
         let addr = self.deref_register(1);
-        let stream = self.machine_st.get_stream_or_alias(
-            addr,
-            &self.indices.stream_aliases,
-            atom!("set_output"),
-            1,
-        )?;
+        let stream =
+            self.machine_st
+                .get_stream_or_alias(addr, &self.indices, atom!("set_output"), 1)?;
 
         if !stream.is_output_stream() {
             let stub = functor_stub(atom!("set_output"), 1);
@@ -5872,6 +5972,7 @@ impl Machine {
         }
 
         self.user_output = stream;
+        self.indices.set_stream(atom!("user_output"), stream);
         Ok(())
     }
 
@@ -6162,7 +6263,7 @@ impl Machine {
 
         let stream = self.machine_st.get_stream_or_alias(
             self.machine_st.registers[1],
-            &self.indices.stream_aliases,
+            &self.indices,
             atom!("read_term"),
             3,
         )?;
@@ -6403,7 +6504,7 @@ impl Machine {
         }
 
         if let Some(alias) = options.get_alias() {
-            if self.indices.stream_aliases.contains_key(&alias) {
+            if self.indices.has_stream(alias) {
                 return Err(self.machine_st.occupied_alias_permission_error(
                     alias,
                     atom!("socket_client_open"),
@@ -6419,11 +6520,9 @@ impl Machine {
 
                 *stream.options_mut() = options;
 
-                if let Some(alias) = stream.options().get_alias() {
-                    self.indices.stream_aliases.insert(alias, stream);
-                }
-
-                self.indices.streams.insert(stream);
+                self.indices
+                    .add_stream(stream, atom!("socket_client_open"), 7)
+                    .map_err(|stub_gen| stub_gen(&mut self.machine_st))?;
 
                 stream_as_cell!(stream)
             }
@@ -6431,7 +6530,7 @@ impl Machine {
                 return Err(self.machine_st.open_permission_error(
                     addr,
                     atom!("socket_client_open"),
-                    3,
+                    7,
                 ));
             }
             Err(ErrorKind::NotFound) => {
@@ -6548,7 +6647,7 @@ impl Machine {
         }
 
         if let Some(alias) = options.get_alias() {
-            if self.indices.stream_aliases.contains_key(&alias) {
+            if self.indices.has_stream(alias) {
                 return Err(self.machine_st.occupied_alias_permission_error(
                     alias,
                     atom!("socket_server_accept"),
@@ -6575,11 +6674,10 @@ impl Machine {
 
                                  *tcp_stream.options_mut() = options;
 
-                                 if let Some(alias) = &tcp_stream.options().get_alias() {
-                                     self.indices.stream_aliases.insert(*alias, tcp_stream);
-                                 }
-
-                                 self.indices.streams.insert(tcp_stream);
+                                 self.indices.add_stream(tcp_stream, atom!("socket_server_accept"), 4)
+                                    .map_err(|stub_gen| {
+                                        stub_gen(&mut self.machine_st)
+                                    })?;
 
                                  let tcp_stream = stream_as_cell!(tcp_stream);
                                  let client = atom_as_cell!(client);
@@ -6615,7 +6713,7 @@ impl Machine {
         {
             let stream0 = self.machine_st.get_stream_or_alias(
                 self.machine_st.registers[2],
-                &self.indices.stream_aliases,
+                &self.indices,
                 atom!("tls_client_negotiate"),
                 3,
             )?;
@@ -6634,7 +6732,10 @@ impl Machine {
 
             let addr = atom!("TLS");
             let stream = Stream::from_tls_stream(addr, stream, &mut self.machine_st.arena);
-            self.indices.streams.insert(stream);
+
+            self.indices
+                .add_stream(stream, atom!("tls_client_negotiate"), 3)
+                .map_err(|stub_gen| stub_gen(&mut self.machine_st))?;
 
             self.machine_st.heap.push(stream_as_cell!(stream));
             let stream_addr = self.deref_register(3);
@@ -6669,7 +6770,7 @@ impl Machine {
 
             let stream0 = self.machine_st.get_stream_or_alias(
                 self.machine_st.registers[3],
-                &self.indices.stream_aliases,
+                &self.indices,
                 atom!("tls_server_negotiate"),
                 3,
             )?;
@@ -6688,7 +6789,10 @@ impl Machine {
             };
 
             let stream = Stream::from_tls_stream(atom!("TLS"), stream, &mut self.machine_st.arena);
-            self.indices.streams.insert(stream);
+
+            self.indices
+                .add_stream(stream, atom!("tls_server_negotiate"), 3)
+                .map_err(|stub_gen| stub_gen(&mut self.machine_st))?;
 
             let stream_addr = self.deref_register(4);
             self.machine_st
@@ -6730,7 +6834,7 @@ impl Machine {
     pub(crate) fn set_stream_position(&mut self) -> CallResult {
         let mut stream = self.machine_st.get_stream_or_alias(
             self.machine_st.registers[1],
-            &self.indices.stream_aliases,
+            &self.indices,
             atom!("set_stream_position"),
             2,
         )?;
@@ -6773,7 +6877,7 @@ impl Machine {
     pub(crate) fn stream_property(&mut self) -> CallResult {
         let mut stream = self.machine_st.get_stream_or_alias(
             self.machine_st.registers[1],
-            &self.indices.stream_aliases,
+            &self.indices,
             atom!("stream_property"),
             2,
         )?;
@@ -7124,7 +7228,7 @@ impl Machine {
     pub(crate) fn write_term(&mut self) -> CallResult {
         let mut stream = self.machine_st.get_stream_or_alias(
             self.machine_st.registers[1],
-            &self.indices.stream_aliases,
+            &self.indices,
             atom!("write_term"),
             3,
         )?;
@@ -8000,7 +8104,7 @@ impl Machine {
     pub(crate) fn devour_whitespace(&mut self) -> CallResult {
         let mut stream = self.machine_st.get_stream_or_alias(
             self.machine_st.registers[1],
-            &self.indices.stream_aliases,
+            &self.indices,
             atom!("$devour_whitespace"),
             1,
         )?;

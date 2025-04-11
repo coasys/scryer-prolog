@@ -1,5 +1,5 @@
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-   Written 2020-2024 by Markus Triska (triska@metalevel.at)
+   Written 2020-2025 by Markus Triska (triska@metalevel.at)
    Part of Scryer Prolog.
    I place this code in the public domain. Use it in any way you want.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
@@ -42,7 +42,6 @@
 % FormatString are used literally, except for the following tokens
 % with special meaning:
 %
-% | `~w`     |  use the next available argument from Arguments here           |
 % | `~q`     |  use the next argument here, formatted as by `writeq/1`        |
 % | `~a`     |  use the next argument here, which must be an atom             |
 % | `~s`     |  use the next argument here, which must be a string            |
@@ -72,6 +71,7 @@
 % | `~Nn`    |  N newlines                                                    |
 % | `~i`     |  ignore the next argument                                      |
 % | `~~`     |  the literal ~                                                 |
+% | `~w`     |  format like `write/1` would; consider using `~q`, `~d`, etc.  |
 %
 % Instead of `~N`, you can write `~*` to use the next argument from
 % Arguments as the numeric argument.
@@ -90,15 +90,15 @@ format_(Fs, Args) -->
 format_args_cells(Fs, Args, Cells) :-
         must_be(chars, Fs),
         must_be(list, Args),
-        unique_variable_names(Args, VNs),
+        unique_variable_names(fabricated, Args, VNs),
         phrase(cells(Fs,Args,0,[],VNs), Cells).
 
-unique_variable_names(Term, VNs) :-
+unique_variable_names(Type, Term, VNs) :-
         term_variables(Term, Vs),
-        foldl(var_name, Vs, VNs, 0, _).
+        foldl(var_name(Type), Vs, VNs, 0, _).
 
-var_name(V, Name=V, Num0, Num) :-
-        charsio:fabricate_var_name(numbervars, Name, Num0),
+var_name(Type, V, Name=V, Num0, Num) :-
+        charsio:fabricate_var_name(Type, Name, Num0),
         Num is Num0 + 1.
 
 user:goal_expansion(format_(Fs,Args,Cs0,Cs),
@@ -187,7 +187,8 @@ elements_gluevars([E|Es], N0, N) -->
         elements_gluevars(Es, N1, N).
 
 element_gluevar(chars(Cs), N0, N) -->
-        { length(Cs, L),
+        { must_be(chars, Cs),
+          length(Cs, L),
           N is N0 + L }.
 element_gluevar(glue(_,V), N, N) --> [V].
 element_gluevar(goal(G), N, N)   --> { G }.
@@ -284,36 +285,12 @@ cells([~|Fs0], Args0, Tab, Es, VNs) -->
         cells(Fs, Args, 0, [], VNs).
 cells([~,s|Fs], [Arg|Args], Tab, Es, VNs) --> !,
         cells(Fs, Args, Tab, [chars(Arg)|Es], VNs).
-cells([~,f|Fs], [Arg|Args], Tab, Es, VNs) --> !,
-        { G = format_number_chars(Arg, Chars) },
-        cells(Fs, Args, Tab, [chars(Chars),goal(G)|Es], VNs).
+cells([~,f|Fs], Args, Tab, Es, VNs) --> !,
+        cells([~,'6',f|Fs], Args, Tab, Es, VNs).
 cells([~|Fs0], Args0, Tab, Es, VNs) -->
         { numeric_argument(Fs0, Num, [f|Fs], Args0, [Arg|Args]) },
         !,
-        { G = (format_number_chars(Arg, Cs0),
-               phrase(upto_what(Bs, .), Cs0, Cs),
-               (   Num =:= 0 -> Chars = Bs
-               ;   (   Cs = ['.'|Rest] ->
-                       length(Rest, L),
-                       (   Num < L ->
-                           length(Ds, Num),
-                           append(Ds, _, Rest)
-                       ;   Num =:= L ->
-                           Ds = Rest
-                       ;   Num > L,
-                           Delta is Num - L,
-                           % we should look into the float with
-                           % greater accuracy here, and use the
-                           % actual digits instead of 0.
-                           length(Zs, Delta),
-                           maplist(=('0'), Zs),
-                           append(Rest, Zs, Ds)
-                       )
-                   ;   length(Ds, Num),
-                       maplist(=('0'), Ds)
-                   ),
-                   append(Bs, ['.'|Ds], Chars)
-               )) },
+        { G = phrase(float_with_n_decimal_digits(Arg, Num), Chars) },
         cells(Fs, Args, Tab, [chars(Chars),goal(G)|Es], VNs).
 cells([~,r|Fs], Args, Tab, Es, VNs) --> !,
         cells([~,'8',r|Fs], Args, Tab, Es, VNs).
@@ -368,9 +345,18 @@ cells(Fs0, Args, Tab, Es, VNs) -->
           Fs1 = [_|_] },
         cells(Fs, Args, Tab, [chars(Fs1)|Es], VNs).
 
-format_number_chars(N0, Chars) :-
-        N is N0, % evaluate compound expression
-        number_chars(N, Chars).
+float_with_n_decimal_digits(F, N) -->
+   {  Fr is abs(float_fractional_part(F)),
+      FrR0 is round(Fr*10^N),
+      I0 is truncate(F),
+      (  FrR0 >= 10^N
+      -> I is I0+truncate(sign(F)), FrR = FrR0
+      ;  I = I0, FrR is FrR0+10^N
+      )
+   },
+   ( { I=0, F<0, FrR>10^N } -> "-0" ; { number_chars(I, Is) }, seq(Is) ),
+   ".",
+   ( { FrR = 1 } -> "0" ; { number_chars(FrR, ['1'|FrRs]) }, seq(FrRs) ).
 
 n_newlines(N0) --> { N0 > 0, N is N0 - 1 }, [newline], n_newlines(N).
 n_newlines(0)  --> [].
@@ -588,12 +574,29 @@ portray_clause(Stream, Term) :-
         flush_output(Stream).
 
 portray_clause_(Term) -->
-        { unique_variable_names(Term, VNs) },
+        { unique_variable_names(numbervars, Term, VNs) },
         portray_(Term, VNs), ".\n".
 
 literal(Lit, VNs) -->
         { write_term_to_chars(Lit, [quoted(true),variable_names(VNs),double_quotes(true)], Ls) },
-        seq(Ls).
+        (   { nonvar(Lit),
+              \+ number(Lit),
+              functor(Lit, F, A),
+              current_op(Pri, _, F),
+              (   A =:= 0
+              ;   Pri >= 1000
+              ) } ->
+            "(", seq(Ls), ")"
+        ;   seq(Ls)
+        ).
+
+literal_(Lit, VNs) -->
+        { phrase(literal(Lit, VNs), Ls) },
+        seq(Ls),
+        (   { phrase((...,[Last]), Ls), char_type(Last, graphic_token) } ->
+            " "
+        ;   ""
+        ).
 
 portray_(Var, VNs) --> { var(Var) }, !, literal(Var, VNs).
 portray_((Head :- Body), VNs) --> !,
@@ -602,7 +605,7 @@ portray_((Head :- Body), VNs) --> !,
 portray_((Head --> Body), VNs) --> !,
         literal(Head, VNs), " -->\n",
         body_(Body, 0, 3, VNs).
-portray_(Any, VNs) --> literal(Any, VNs).
+portray_(Any, VNs) --> literal_(Any, VNs).
 
 
 body_(Var, C, I, VNs) --> { var(Var) }, !,
@@ -627,7 +630,7 @@ body_((A;B), C, I, VNs) --> !,
         body_(A, C1, C1, VNs), "\n",
         else_branch(B, I, VNs).
 body_(Goal, C, I, VNs) -->
-        indent_to(C, I), literal(Goal, VNs).
+        indent_to(C, I), literal_(Goal, VNs).
 
 
 % True iff Body has the shape ( If -> Then ; Else ).

@@ -1,5 +1,5 @@
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-   Written 2018-2023 by Markus Triska (triska@metalevel.at)
+   Written 2018-2025 by Markus Triska (triska@metalevel.at)
    I place this code in the public domain. Use it in any way you want.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
@@ -7,7 +7,8 @@
                   can_be/2,
                   instantiation_error/1,
                   domain_error/3,
-                  type_error/3
+                  type_error/3,
+                  call_with_error_context/2
                   ]).
 
 
@@ -36,6 +37,7 @@
 %     - list
 %     - octet_character
 %     - octet_chars
+%     - pair
 %     - term
 
 must_be(Type, Term) :-
@@ -82,6 +84,7 @@ must_be_(octet_chars, Cs) :-
 must_be_(list, Term)    :- check_(error:ilist, list, Term).
 must_be_(type, Term)    :- check_(error:type, type, Term).
 must_be_(boolean, Term) :- check_(error:boolean, boolean, Term).
+must_be_(pair, Term)    :- check_(error:pair, pair, Term).
 must_be_(term, Term)    :-
         (   acyclic_term(Term) ->
             (   ground(Term) ->  true
@@ -103,6 +106,9 @@ check_(Pred, Type, Term) :-
         ;   call(Pred, Term) -> true
         ;   type_error(Type, Term, must_be/2)
         ).
+
+
+pair(_-_).
 
 boolean(B) :- ( B == true ; B == false ).
 
@@ -139,6 +145,7 @@ type(var).
 type(boolean).
 type(term).
 type(not_less_than_zero).
+type(pair).
 
 %% can_be(Type, Term)
 %
@@ -187,6 +194,7 @@ can_(octet_chars, Cs) :-
         ).
 can_(list, Term)    :- list_or_partial_list(Term).
 can_(boolean, Term) :- boolean(Term).
+can_(pair, Term)    :- pair(Term).
 can_(term, Term)    :-
         (   acyclic_term(Term) ->
             true
@@ -217,3 +225,20 @@ domain_error(Type, Term, Context) :-
 
 type_error(Type, Term, Context) :-
     throw(error(type_error(Type, Term), Context)).
+
+/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+   call_with_error_context/2
+
+   See https://github.com/mthom/scryer-prolog/discussions/2839 .
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+
+%% call_with_error_context(+Goal, +Pair)
+%
+% Call _Goal_ with error context _Pair_.
+%
+% Examples of error contexts: `predicate-PI`, `file-Filename` etc.
+
+:- meta_predicate(call_with_error_context(0,+)).
+call_with_error_context(G_0, Pair) :-
+   must_be(pair, Pair),
+   catch(G_0, error(E,Pairs), throw(error(E,[Pair|Pairs]))).

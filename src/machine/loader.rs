@@ -1393,7 +1393,10 @@ impl MachineState {
                         Err(cons_term) => term_stack.push(cons_term),
                     }
                 }
-                (HeapCellValueTag::Var | HeapCellValueTag::AttrVar | HeapCellValueTag::StackVar, h) => {
+                (HeapCellValueTag::StackVar, h) => {
+                    term_stack.push(Term::Var(Cell::default(), VarPtr::from(format!("s_{}", h))));
+                }
+                (HeapCellValueTag::Var | HeapCellValueTag::AttrVar, h) => {
                     term_stack.push(Term::Var(Cell::default(), VarPtr::from(format!("_{}", h))));
                 }
                 (HeapCellValueTag::Cons | HeapCellValueTag::CStr | HeapCellValueTag::Fixnum |
@@ -1805,7 +1808,7 @@ impl Machine {
     pub(crate) fn push_load_context(&mut self) -> CallResult {
         let stream = self.machine_st.get_stream_or_alias(
             self.machine_st.registers[1],
-            &self.indices.stream_aliases,
+            &self.indices,
             atom!("$push_load_context"),
             2,
         )?;

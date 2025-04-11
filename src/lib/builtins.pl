@@ -364,7 +364,7 @@ cont_list_goal(Conts, '$call'(builtins:dispatch_call_list(Conts))).
 
 dispatch_prep(Gs, B, Conts) :-
     (  callable(Gs) ->
-       strip_module(Gs, M, Gs0),
+       loader:strip_module(Gs, M, Gs0),
        (  nonvar(Gs0),
           dispatch_prep_(Gs0, B, Conts) ->
           true
@@ -661,7 +661,7 @@ write_term(Term, Options) :-
 
 %% write_term(+Stream, +Term, +Options).
 %
-% Write Term to the stream Stream according to some output syntax options. The options avaibale are:
+% Write Term to the stream Stream according to some output syntax options. The options available are:
 %
 %  * `ignore_ops(+Boolean)` if `true`, the generic term representation is used everywhere. In `false`
 %    (default), operators do not use that generic term representation.
@@ -766,6 +766,9 @@ read(Term) :-
     read_term(Stream, Term, []).
     % read(Stream, Term).
 
+%% read(+Stream, -Term).
+%
+% Same as read_term/3 with all default options.
 read(Stream, Term) :-
     read_term(Stream, Term, []).
 
@@ -1172,7 +1175,7 @@ clause(H, B) :-
 % Asserts (inserts) a new clause (rule or fact) into the current module.
 % The clause will be inserted at the beginning of the module.
 asserta(Clause0) :-
-    loader:strip_subst_module(Clause0, user, Module, Clause),
+    loader:strip_module(Clause0, Module, Clause),
     asserta_(Module, Clause).
 
 asserta_(Module, (Head :- Body)) :-
@@ -1188,7 +1191,7 @@ asserta_(Module, Fact) :-
 % Asserts (inserts) a new clause (rule or fact) into the current module.
 % The clase will be inserted at the end of the module.
 assertz(Clause0) :-
-    loader:strip_subst_module(Clause0, user, Module, Clause),
+    loader:strip_module(Clause0, Module, Clause),
     assertz_(Module, Clause).
 
 assertz_(Module, (Head :- Body)) :-
@@ -1208,15 +1211,9 @@ retract(Clause0) :-
     loader:strip_module(Clause0, Module, Clause),
     (  Clause \= (_ :- _) ->
        loader:strip_module(Clause, Module, Head),
-       (  var(Module) -> Module = user
-       ;  true
-       ),
        Body = true,
        retract_module_clause(Head, Body, Module)
     ;  Clause = (Head :- Body) ->
-       (  var(Module) -> Module = user
-       ;  true
-       ),
        retract_module_clause(Head, Body, Module)
     ).
 
@@ -1370,11 +1367,7 @@ current_predicate(Pred) :-
     (  var(Pred) ->
        '$get_db_refs'(_, _, _, PIs),
        lists:member(Pred, PIs)
-    ;  '$strip_module'(Pred, Module, UnqualifiedPred),
-       (  var(Module),
-          \+ functor(Pred, (:), 2)
-       ;  atom(Module)
-       ),
+    ;  loader:strip_module(Pred, Module, UnqualifiedPred),
        UnqualifiedPred = Name/Arity ->
        (  (  nonvar(Name), \+ atom(Name)
           ;  nonvar(Arity), \+ integer(Arity)
@@ -2228,7 +2221,7 @@ set_stream_position(S_or_a, Position) :-
 
 %% callable(X).
 %
-% True iff X is bound o an atom or a compund term.
+% True iff X is bound to an atom or a compound term.
 
 :- non_counted_backtracking callable/1.
 

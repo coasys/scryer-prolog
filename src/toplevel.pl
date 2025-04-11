@@ -1,4 +1,4 @@
-:- module('$toplevel', []).
+:- module('$toplevel', [repl/0]).
 
 :- use_module(library(charsio)).
 :- use_module(library(error)).
@@ -29,6 +29,19 @@ load_scryerrc :-
     ).
 
 '$repl' :-
+    catch(
+        start_repl,
+        _,
+        % Something bad enough happened that the REPL itself threw an error.
+        % This can be caused by a broken user_output stream, so we cannot
+        % print an error.
+        %
+        % The best we can do now is halt with an error code,
+        % so that users can try to diagnose the issue:
+        halt(99)
+    ).
+
+start_repl :-
     asserta('$toplevel':started),
     raw_argv(Args0),
     (   append(Args1, ["--"|_], Args0) ->
