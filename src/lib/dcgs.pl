@@ -12,8 +12,8 @@ to learn more about them.
           [op(1105, xfy, '|'),
            phrase/2,
            phrase/3,
-           phrase/4,
-           phrase/5,
+           phrase//2,
+           phrase//3,
            seq//1,
            seqq//1,
            ... //0,
@@ -25,13 +25,13 @@ to learn more about them.
 :- use_module(library(lists), [append/3, member/2]).
 :- use_module(library(loader), [strip_module/3]).
 
-:- meta_predicate phrase(2, ?).
+:- meta_predicate(phrase(2, ?)).
 
-:- meta_predicate phrase(2, ?, ?).
+:- meta_predicate(phrase(2, ?, ?)).
 
-:- meta_predicate phrase(2, ?, ?, ?).
+:- meta_predicate(phrase(3, ?, ?, ?)).
 
-:- meta_predicate phrase(2, ?, ?, ?, ?).
+:- meta_predicate(phrase(4, ?, ?, ?, ?)).
 
 :- meta_predicate(','(2, 2, ?, ?)).
 

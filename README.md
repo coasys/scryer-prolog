@@ -72,7 +72,7 @@ Extend Scryer Prolog to include the following, among other features:
         (`atom`, `var`, etc) with if/else ladders. (_in progress_)
   - [ ] Inlining all built-ins and system call instructions.
   - [x] Greatly reducing the number of instructions used to compile disjunctives.
-  - [ ] Storing short atoms to heap cells without writing them to the atom table.
+  - [x] Storing short atoms to heap cells without writing them to the atom table.
 - [ ] A compacting garbage collector satisfying the five properties of
       "[Precise Garbage Collection in Prolog](https://www.complang.tuwien.ac.at/ulrich/papers/PDF/2008-ciclops.pdf)." (_in progress_)
 - [ ] Mode declarations.
@@ -197,57 +197,91 @@ Then a `pkg` directory will be created, containing everything you need for a web
 ```html
 <!DOCTYPE html>
 <html>
-    <head>
-        <meta charset="UTF-8" />
-        <title>Scryer Prolog - Sudoku Solver Example</title>
-        <script type="module">
-        import init, { eval_code } from './pkg/scryer_prolog.js';
 
-        const run = async () => {
-            await init("./pkg/scryer_prolog_bg.wasm");
-            let code = `
-            :- use_module(library(format)).
-            :- use_module(library(clpz)).
-            :- use_module(library(lists)).
-            
-            sudoku(Rows) :-
-            length(Rows, 9), maplist(same_length(Rows), Rows),
-            append(Rows, Vs), Vs ins 1..9,
-            maplist(all_distinct, Rows),
-            transpose(Rows, Columns),
-            maplist(all_distinct, Columns),
-            Rows = [As,Bs,Cs,Ds,Es,Fs,Gs,Hs,Is],
-            blocks(As, Bs, Cs),
-            blocks(Ds, Es, Fs),
-            blocks(Gs, Hs, Is).
-            
-            blocks([], [], []).
-            blocks([N1,N2,N3|Ns1], [N4,N5,N6|Ns2], [N7,N8,N9|Ns3]) :-
-            all_distinct([N1,N2,N3,N4,N5,N6,N7,N8,N9]),
-            blocks(Ns1, Ns2, Ns3).
-            
-            problem(1, [[_,_,_,_,_,_,_,_,_],
-                        [_,_,_,_,_,3,_,8,5],
-                        [_,_,1,_,2,_,_,_,_],
-                        [_,_,_,5,_,7,_,_,_],
-                        [_,_,4,_,_,_,1,_,_],
-                        [_,9,_,_,_,_,_,_,_],
-                        [5,_,_,_,_,_,_,7,3],
-                        [_,_,2,_,1,_,_,_,_],
-                        [_,_,_,_,4,_,_,_,9]]).
-            
-            main :-
-            problem(1, Rows), sudoku(Rows), maplist(portray_clause, Rows).
-            
-            :- initialization(main).
-            `;
-            const result = eval_code(code);
-            document.write(`<p>Sudoku solver returns:</p><pre>${result}</pre>`);
+<head>
+    <meta charset="UTF-8" />
+    <title>Scryer Prolog - Sudoku Solver Example</title>
+    <script type="module">
+        import initScryer, { MachineBuilder } from "./pkg/scryer_prolog.js";
+
+        // Initialize Scryer Prolog with WASM
+        const wasm = await fetch("./pkg/scryer_prolog_bg.wasm");
+        const module = await WebAssembly.compile(await wasm.arrayBuffer());
+        await initScryer(module);
+
+        // Set up the Prolog machine
+        const machine = new MachineBuilder().build();
+
+        // Knowledge base: Sudoku rules and problem definition
+        const kb = `
+        :- use_module(library(format)).
+        :- use_module(library(clpz)).
+        :- use_module(library(lists)).
+
+        sudoku(Rows) :-
+          length(Rows, 9), maplist(same_length(Rows), Rows),
+          append(Rows, Vs), Vs ins 1..9,
+          maplist(all_distinct, Rows),
+          transpose(Rows, Columns),
+          maplist(all_distinct, Columns),
+          Rows = [A,B,C,D,E,F,G,H,I],
+          blocks(A, B, C),
+          blocks(D, E, F),
+          blocks(G, H, I).
+
+        blocks([], [], []).
+        blocks([A,B,C|T1], [D,E,F|T2], [G,H,I|T3]) :-
+          all_distinct([A,B,C,D,E,F,G,H,I]),
+          blocks(T1, T2, T3).
+
+        problem(1, [[_,_,_,_,_,_,_,_,_],
+                    [_,_,_,_,_,3,_,8,5],
+                    [_,_,1,_,2,_,_,_,_],
+                    [_,_,_,5,_,7,_,_,_],
+                    [_,_,4,_,_,_,1,_,_],
+                    [_,9,_,_,_,_,_,_,_],
+                    [5,_,_,_,_,_,_,7,3],
+                    [_,_,2,_,1,_,_,_,_],
+                    [_,_,_,_,4,_,_,_,9]]).
+      `;
+
+        machine.consultModuleString("user", kb);
+
+        // Run the query
+        const query = "problem(1, Rows), sudoku(Rows), maplist(portray_clause, Rows).";
+        const answers = machine.runQuery(query);
+
+        const formattedSolutions = [];
+
+        // Format the answers
+        for (const solution of answers) {
+            const rows = solution.bindings["Rows"].list;
+
+            const grid = rows.map(row =>
+                row.list.map(cell => cell.integer)
+            );
+
+            const formatted = grid.map(row => `[${row.join(", ")}]`).join("\n");
+            formattedSolutions.push(formatted);
         }
-        run();
-        </script>    
-    </head>
-    <body></body>
+
+        // Output results
+        const solutionDiv = document.querySelector("#soduku-solution");
+        for (const solution of formattedSolutions) {
+            const newPre = document.createElement("pre");
+            newPre.textContent = solution;
+            solutionDiv.appendChild(newPre);
+        }
+    </script>
+</head>
+
+<body>
+    <p>Sudoku solver returns:</p>
+    <div id="soduku-solution">
+
+    </div>
+</body>
+
 </html>
 ```
 
@@ -495,7 +529,7 @@ is unified with a term that contains that variable as a proper
 subterm. For efficiency, the *occurs&nbsp;check* is omitted by default
 in Scryer&nbsp;Prolog and many other Prolog systems.
 
-In Scryer Prolog, performing unifications which succeed only if the
+In Scryer Prolog, unifications which succeed only if the
 *occurs&nbsp;check* is omitted yield *cyclic&nbsp;terms*, also called
 *rational&nbsp;trees*. For example:
 
@@ -727,9 +761,13 @@ The modules that ship with Scryer&nbsp;Prolog are also called
   public key signatures and signature verification with&nbsp;Ed25519,
   ECDH key&nbsp;exchange over Curve25519 (X25519), authenticated symmetric
   encryption with ChaCha20-Poly1305, and reasoning about elliptic curves.
+* [`process`](src/lib/process.pl)
+  Create and manage parallel processes.
 * [`uuid`](src/lib/uuid.pl) UUIDv4 generation and hex representation
 * [`tls`](src/lib/tls.pl)
   Predicates for negotiating TLS connections explicitly.
+* [`numerics/special_functions`](src/lib/numerics/special_functions.pl)
+  Predicates for erf, gamma, beta, and related special functions.
 * [`ugraphs`](src/lib/ugraphs.pl) Graph manipulation library
 * [`simplex`](src/lib/simplex.pl) Providing `assignment/2`,
   `transportation/4` and other predicates for solving linear
@@ -830,20 +868,41 @@ ideally suited for use in corporations and government&nbsp;agencies
 that are subject to strict regulations pertaining to interoperability,
 standards&nbsp;compliance and warranty.
 
-Successful existing applications of Scryer Prolog include the
-[DocLog](https://github.com/aarroyoc/doclog)&nbsp;system which
-generates Scryer's own documentation and homepage, [reasoning
-about business&nbsp;grants](https://arxiv.org/abs/2406.15293)
-in the Austrian public&nbsp;administration, and parts of the
-[precautionary](https://github.com/dcnorris/precautionary/tree/main/exec/prolog)
-package for the analysis of dose-escalation trials in the
-safety-critical and highly regulated domain of oncology
-trial&nbsp;design, described in [*An Executable Specification of
-Oncology Dose-Escalation Protocols with&nbsp;Prolog*](https://arxiv.org/abs/2402.08334).
+Successful existing applications of Scryer Prolog include:
+
+- [DocLog](https://github.com/aarroyoc/doclog) which generates
+  Scryer's own documentation and homepage
+- [Grants4Companies](https://arxiv.org/abs/2406.15293): reasoning
+  about business&nbsp;grants in the Austrian public&nbsp;administration
+- parts of the [precautionary](https://github.com/dcnorris/precautionary/tree/main/exec/prolog)
+  package for the analysis of dose-escalation trials in the
+  safety-critical and highly regulated domain of oncology
+  trial&nbsp;design, described in [*An Executable Specification of
+  Oncology Dose-Escalation Protocols with&nbsp;Prolog*](https://arxiv.org/abs/2402.08334)
+  and culminating in&nbsp;[**DEDUCTION**](https://codeberg.org/dcnorris/DEDUCTION)
+- semantic reasoning and queries in [AD4M](https://github.com/coasys/ad4m),
+  an agent-centric distributed application meta-ontology.
 
 Scryer Prolog is also very well suited for teaching and learning
 Prolog, and for testing syntactic conformance and hence portability of
 existing Prolog&nbsp;programs.
+
+## Scryer Prolog Meetups
+
+Scryer Prolog Meetups are an excellent opportunity to present and get
+to know the latest developments in Scryer&nbsp;Prolog and its
+applications, to exchange ideas about current&nbsp;plans and
+future&nbsp;directions, and to discuss projects and visions
+in&nbsp;person.
+
+- [Scryer Prolog Meetup 2023](https://hsd-pbsa.de/veranstaltung/scryer-prolog-meetup-2023/)
+  in Düsseldorf, Germany. Its [announcement](https://github.com/mthom/scryer-prolog/discussions/1813)
+  and [discussion](https://github.com/mthom/scryer-prolog/discussions/2160).
+- [Scryer Prolog Meetup 2024](https://www.digitalaustria.gv.at/wissenswertes/events/scryerprologmeetup2024)
+  in Vienna, Austria. Its [announcement and discussion](https://github.com/mthom/scryer-prolog/discussions/2377).
+- **Save the date:** The [Scryer Prolog Meetup 2025](https://hsd-pbsa.de/veranstaltung/scryer-prolog-meetup-2025/)
+  will take place on Nov.&nbsp;13th and 14th&nbsp;2025 in Düsseldorf, Germany.
+  Its [announcement](https://github.com/mthom/scryer-prolog/discussions/2948).
 
 ## Support and discussions
 

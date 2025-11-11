@@ -17,6 +17,8 @@ as one HTTP method (in lowercase) and followed by a Route Match and a predicate
 which will handle the call.
 
 ```
+:- use_module(library(http/http_server)).
+
 text_handler(Request, Response) :-
   http_status_code(Response, 200),
   http_body(Response, text("Welcome to Scryer Prolog!")).
@@ -24,10 +26,11 @@ text_handler(Request, Response) :-
 parameter_handler(User, Request, Response) :-
   http_body(Response, text(User)).
 
-http_listen(7890, [
-  get(echo, text_handler),                 % GET /echo
-  post(user/User, parameter_handler(User)) % POST /user/<User>
-]).
+run:-
+  http_listen(7890, [
+    get(echo, text_handler),                 % GET /echo
+    post(user/User, parameter_handler(User)) % POST /user/<User>
+  ]).
 ```
 
 Every handler predicate will have at least 2-arity, with Request and Response.
@@ -62,10 +65,10 @@ Some things that are still missing:
 	      http_basic_auth/4
 ]).
 
-:- meta_predicate http_listen(?, :).
-:- meta_predicate http_listen(?, :, ?).
+:- meta_predicate(http_listen(?, :)).
+:- meta_predicate(http_listen(?, :, ?)).
 
-:- meta_predicate http_basic_auth(:, :, ?, ?).
+:- meta_predicate(http_basic_auth(:, :, ?, ?)).
 
 :- use_module(library(charsio)).
 :- use_module(library(crypto)).

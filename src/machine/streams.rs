@@ -1,12 +1,12 @@
 use crate::arena::*;
 use crate::atom_table::*;
+use crate::functor_macro::*;
 use crate::parser::ast::*;
 use crate::parser::char_reader::*;
 use crate::read::*;
 
 #[cfg(feature = "http")]
 use crate::http::HttpResponse;
-use crate::machine::heap::*;
 use crate::machine::machine_errors::*;
 use crate::machine::machine_indices::*;
 use crate::machine::machine_state::*;
@@ -37,6 +37,9 @@ use native_tls::TlsStream;
 
 #[cfg(feature = "http")]
 use warp::hyper;
+
+mod compat;
+pub use compat::*;
 
 #[derive(Debug, BitfieldSpecifier, Clone, Copy, PartialEq, Eq, Hash)]
 #[bits = 1]
@@ -476,7 +479,7 @@ impl StreamOptions {
     #[inline]
     pub fn get_alias(self) -> Option<Atom> {
         if self.has_alias() {
-            Some(Atom::from(self.alias() << 3))
+            Some(Atom::from(self.alias()))
         } else {
             None
         }
@@ -487,7 +490,7 @@ impl StreamOptions {
         self.set_has_alias(alias.is_some());
 
         if let Some(alias) = alias {
-            self.set_alias(alias.flat_index());
+            self.set_alias(alias.index);
         }
     }
 }
@@ -588,6 +591,8 @@ arena_allocated_impl_for_stream!(StandardOutputStream, StandardOutputStream);
 arena_allocated_impl_for_stream!(StandardErrorStream, StandardErrorStream);
 arena_allocated_impl_for_stream!(CharReader<CallbackStream>, CallbackStream);
 arena_allocated_impl_for_stream!(CharReader<InputChannelStream>, InputChannelStream);
+arena_allocated_impl_for_stream!(CharReader<PipeReader>, PipeReader);
+arena_allocated_impl_for_stream!(CharReader<PipeWriter>, PipeWriter);
 
 #[derive(Debug, Copy, Clone)]
 pub enum Stream {
@@ -608,6 +613,8 @@ pub enum Stream {
     StandardError(TypedArenaPtr<StandardErrorStream>),
     Callback(TypedArenaPtr<CallbackStream>),
     InputChannel(TypedArenaPtr<InputChannelStream>),
+    PipeReader(TypedArenaPtr<PipeReader>),
+    PipeWriter(TypedArenaPtr<PipeWriter>),
 }
 
 impl From<TypedArenaPtr<ReadlineStream>> for Stream {
@@ -688,6 +695,8 @@ impl Stream {
             ArenaHeaderTag::InputChannelStream => {
                 Stream::InputChannel(unsafe { ptr.as_typed_ptr() })
             }
+            ArenaHeaderTag::PipeReader => Stream::PipeReader(unsafe { ptr.as_typed_ptr() }),
+            ArenaHeaderTag::PipeWriter => Stream::PipeWriter(unsafe { ptr.as_typed_ptr() }),
             _ => unreachable!(),
         }
     }
@@ -726,6 +735,8 @@ impl Stream {
             Stream::StandardError(ptr) => ptr.header_ptr(),
             Stream::Callback(ptr) => ptr.header_ptr(),
             Stream::InputChannel(ptr) => ptr.header_ptr(),
+            Stream::PipeReader(ptr) => ptr.header_ptr(),
+            Stream::PipeWriter(ptr) => ptr.header_ptr(),
         }
     }
 
@@ -748,6 +759,8 @@ impl Stream {
             Stream::StandardError(ref ptr) => &ptr.options,
             Stream::Callback(ref ptr) => &ptr.options,
             Stream::InputChannel(ref ptr) => &ptr.options,
+            Stream::PipeReader(ref ptr) => &ptr.options,
+            Stream::PipeWriter(ref ptr) => &ptr.options,
         }
     }
 
@@ -770,6 +783,8 @@ impl Stream {
             Stream::StandardError(ref mut ptr) => &mut ptr.options,
             Stream::Callback(ref mut ptr) => &mut ptr.options,
             Stream::InputChannel(ref mut ptr) => &mut ptr.options,
+            Stream::PipeReader(ref mut ptr) => &mut ptr.options,
+            Stream::PipeWriter(ref mut ptr) => &mut ptr.options,
         }
     }
 
@@ -793,6 +808,8 @@ impl Stream {
             Stream::StandardError(ptr) => ptr.lines_read += incr_num_lines_read,
             Stream::Callback(ptr) => ptr.lines_read += incr_num_lines_read,
             Stream::InputChannel(ptr) => ptr.lines_read += incr_num_lines_read,
+            Stream::PipeReader(ptr) => ptr.lines_read += incr_num_lines_read,
+            Stream::PipeWriter(_) => {}
         }
     }
 
@@ -816,6 +833,8 @@ impl Stream {
             Stream::StandardError(ptr) => ptr.lines_read = value,
             Stream::Callback(ptr) => ptr.lines_read = value,
             Stream::InputChannel(ptr) => ptr.lines_read = value,
+            Stream::PipeReader(ptr) => ptr.lines_read = value,
+            Stream::PipeWriter(_) => {}
         }
     }
 
@@ -839,6 +858,8 @@ impl Stream {
             Stream::StandardError(ptr) => ptr.lines_read,
             Stream::Callback(ptr) => ptr.lines_read,
             Stream::InputChannel(ptr) => ptr.lines_read,
+            Stream::PipeReader(ptr) => ptr.lines_read,
+            Stream::PipeWriter(_) => 0,
         }
     }
 }
@@ -856,6 +877,8 @@ impl CharRead for Stream {
             Stream::StaticString(src) => (*src).peek_char(),
             Stream::Byte(cursor) => (*cursor).peek_char(),
             Stream::InputChannel(cursor) => (*cursor).peek_char(),
+            Stream::PipeReader(cursor) => (*cursor).peek_char(),
+
             #[cfg(feature = "http")]
             Stream::HttpWrite(_) => Some(Err(std::io::Error::new(
                 ErrorKind::PermissionDenied,
@@ -865,7 +888,8 @@ impl CharRead for Stream {
             | Stream::StandardError(_)
             | Stream::StandardOutput(_)
             | Stream::Null(_)
-            | Stream::Callback(_) => Some(Err(std::io::Error::new(
+            | Stream::Callback(_)
+            | Stream::PipeWriter(_) => Some(Err(std::io::Error::new(
                 ErrorKind::PermissionDenied,
                 StreamError::ReadFromOutputStream,
             ))),
@@ -884,6 +908,7 @@ impl CharRead for Stream {
             Stream::StaticString(src) => (*src).read_char(),
             Stream::Byte(cursor) => (*cursor).read_char(),
             Stream::InputChannel(cursor) => (*cursor).read_char(),
+            Stream::PipeReader(cursor) => (*cursor).read_char(),
             #[cfg(feature = "http")]
             Stream::HttpWrite(_) => Some(Err(std::io::Error::new(
                 ErrorKind::PermissionDenied,
@@ -893,7 +918,8 @@ impl CharRead for Stream {
             | Stream::StandardError(_)
             | Stream::StandardOutput(_)
             | Stream::Null(_)
-            | Stream::Callback(_) => Some(Err(std::io::Error::new(
+            | Stream::Callback(_)
+            | Stream::PipeWriter(_) => Some(Err(std::io::Error::new(
                 ErrorKind::PermissionDenied,
                 StreamError::ReadFromOutputStream,
             ))),
@@ -911,13 +937,15 @@ impl CharRead for Stream {
             Stream::Readline(rl_stream) => rl_stream.put_back_char(c),
             Stream::StaticString(src) => src.put_back_char(c),
             Stream::Byte(cursor) => cursor.put_back_char(c),
+            Stream::PipeReader(cursor) => cursor.put_back_char(c),
             #[cfg(feature = "http")]
             Stream::HttpWrite(_) => {}
             Stream::OutputFile(_)
             | Stream::StandardError(_)
             | Stream::StandardOutput(_)
             | Stream::Null(_)
-            | Stream::Callback(_) => {}
+            | Stream::Callback(_)
+            | Stream::PipeWriter(_) => {}
             Stream::InputChannel(_) => {}
         }
     }
@@ -934,13 +962,15 @@ impl CharRead for Stream {
             Stream::StaticString(ref mut src) => src.consume(nread),
             Stream::Byte(ref mut cursor) => cursor.consume(nread),
             Stream::InputChannel(ref mut cursor) => cursor.consume(nread),
+            Stream::PipeReader(ref mut cursor) => cursor.consume(nread),
             #[cfg(feature = "http")]
             Stream::HttpWrite(_) => {}
             Stream::OutputFile(_)
             | Stream::StandardError(_)
             | Stream::StandardOutput(_)
             | Stream::Null(_)
-            | Stream::Callback(_) => {}
+            | Stream::Callback(_)
+            | Stream::PipeWriter(_) => {}
         }
     }
 }
@@ -959,6 +989,7 @@ impl Read for Stream {
             Stream::StaticString(src) => (*src).read(buf),
             Stream::Byte(cursor) => (*cursor).read(buf),
             Stream::InputChannel(cursor) => (*cursor).read(buf),
+            Stream::PipeReader(cursor) => (*cursor).read(buf),
             #[cfg(feature = "http")]
             Stream::HttpWrite(_) => Err(std::io::Error::new(
                 ErrorKind::PermissionDenied,
@@ -967,11 +998,12 @@ impl Read for Stream {
             Stream::OutputFile(_)
             | Stream::StandardError(_)
             | Stream::StandardOutput(_)
-            | Stream::Null(_)
-            | Stream::Callback(_) => Err(std::io::Error::new(
+            | Stream::Callback(_)
+            | Stream::PipeWriter(_) => Err(std::io::Error::new(
                 ErrorKind::PermissionDenied,
                 StreamError::ReadFromOutputStream,
             )),
+            Stream::Null(_) => Ok(0),
         }
     }
 }
@@ -989,16 +1021,18 @@ impl Write for Stream {
             Stream::StandardError(stream) => stream.write(buf),
             #[cfg(feature = "http")]
             Stream::HttpWrite(ref mut stream) => stream.get_mut().write(buf),
+            Stream::PipeWriter(ref mut stream) => stream.get_mut().write(buf),
             #[cfg(feature = "http")]
             Stream::HttpRead(_) => Err(std::io::Error::new(
                 ErrorKind::PermissionDenied,
                 StreamError::WriteToInputStream,
             )),
+            Stream::Null(_) => Ok(buf.len()),
             Stream::StaticString(_)
             | Stream::InputChannel(_)
             | Stream::Readline(_)
             | Stream::InputFile(..)
-            | Stream::Null(_) => Err(std::io::Error::new(
+            | Stream::PipeReader(_) => Err(std::io::Error::new(
                 ErrorKind::PermissionDenied,
                 StreamError::WriteToInputStream,
             )),
@@ -1015,6 +1049,7 @@ impl Write for Stream {
             Stream::Callback(ref mut callback_stream) => callback_stream.stream.get_mut().flush(),
             Stream::StandardError(stream) => stream.stream.flush(),
             Stream::StandardOutput(stream) => stream.stream.flush(),
+            Stream::PipeWriter(ref mut stream) => stream.stream.get_mut().flush(),
             #[cfg(feature = "http")]
             Stream::HttpWrite(ref mut stream) => stream.stream.get_mut().flush(),
             #[cfg(feature = "http")]
@@ -1022,11 +1057,12 @@ impl Write for Stream {
                 ErrorKind::PermissionDenied,
                 StreamError::FlushToInputStream,
             )),
+            Stream::Null(_) => Ok(()),
             Stream::StaticString(_)
             | Stream::InputChannel(_)
             | Stream::Readline(_)
             | Stream::InputFile(_)
-            | Stream::Null(_) => Err(std::io::Error::new(
+            | Stream::PipeReader(_) => Err(std::io::Error::new(
                 ErrorKind::PermissionDenied,
                 StreamError::FlushToInputStream,
             )),
@@ -1115,6 +1151,20 @@ fn cursor_position<T>(
     }
 }
 
+impl From<Stream> for HeapCellValue {
+    #[inline(always)]
+    fn from(stream: Stream) -> Self {
+        if stream.is_null_stream() {
+            let res = atom!("null_stream");
+            atom_as_cell!(res)
+        } else {
+            let res = stream.as_ptr();
+            debug_assert!(!res.is_null());
+            raw_ptr_as_cell!(res)
+        }
+    }
+}
+
 impl Stream {
     #[inline]
     pub(crate) fn position(&mut self) -> Option<(u64, usize)> {
@@ -1178,6 +1228,8 @@ impl Stream {
             Stream::StandardError(stream) => stream.past_end_of_stream,
             Stream::Callback(stream) => stream.past_end_of_stream,
             Stream::InputChannel(stream) => stream.past_end_of_stream,
+            Stream::PipeReader(stream) => stream.past_end_of_stream,
+            Stream::PipeWriter(stream) => stream.past_end_of_stream,
         }
     }
 
@@ -1206,6 +1258,8 @@ impl Stream {
             Stream::StandardError(stream) => stream.past_end_of_stream = value,
             Stream::Callback(stream) => stream.past_end_of_stream = value,
             Stream::InputChannel(stream) => stream.past_end_of_stream = value,
+            Stream::PipeReader(stream) => stream.past_end_of_stream = value,
+            Stream::PipeWriter(stream) => stream.past_end_of_stream = value,
         }
     }
 
@@ -1267,6 +1321,7 @@ impl Stream {
                     }
                 }
             }
+            Stream::Null(_) => AtEndOfStream::At,
             #[cfg(feature = "http")]
             Stream::HttpRead(stream_layout) => {
                 if stream_layout
@@ -1315,7 +1370,8 @@ impl Stream {
             | Stream::InputChannel(_)
             | Stream::Readline(_)
             | Stream::StaticString(_)
-            | Stream::InputFile(..) => atom!("read"),
+            | Stream::InputFile(..)
+            | Stream::PipeReader(_) => atom!("read"),
             Stream::NamedTcp(..) => atom!("read_append"),
             Stream::OutputFile(file) if file.is_append => atom!("append"),
             #[cfg(feature = "http")]
@@ -1323,7 +1379,8 @@ impl Stream {
             Stream::OutputFile(_)
             | Stream::StandardError(_)
             | Stream::StandardOutput(_)
-            | Stream::Callback(_) => {
+            | Stream::Callback(_)
+            | Stream::PipeWriter(_) => {
                 atom!("write")
             }
             Stream::Null(_) => atom!(""),
@@ -1353,6 +1410,20 @@ impl Stream {
                 inner: Cursor::new(Vec::new()),
                 callback,
             }))),
+            arena
+        ))
+    }
+
+    pub(crate) fn from_pipe_writer(writer: PipeWriter, arena: &mut Arena) -> Stream {
+        Stream::PipeWriter(arena_alloc!(
+            ManuallyDrop::new(StreamLayout::new(CharReader::new(writer))),
+            arena
+        ))
+    }
+
+    pub(crate) fn from_pipe_reader(reader: PipeReader, arena: &mut Arena) -> Stream {
+        Stream::PipeReader(arena_alloc!(
+            ManuallyDrop::new(StreamLayout::new(CharReader::new(reader))),
             arena
         ))
     }
@@ -1497,6 +1568,16 @@ impl Stream {
                 Ok(())
             }
 
+            Stream::PipeReader(mut stream) => {
+                stream.drop_payload();
+                Ok(())
+            }
+
+            Stream::PipeWriter(mut stream) => {
+                stream.drop_payload();
+                Ok(())
+            }
+
             Stream::Null(_) => Ok(()),
 
             Stream::Readline(_) | Stream::StandardOutput(_) | Stream::StandardError(_) => {
@@ -1522,7 +1603,9 @@ impl Stream {
             | Stream::InputChannel(_)
             | Stream::Readline(_)
             | Stream::StaticString(_)
-            | Stream::InputFile(..) => true,
+            | Stream::InputFile(..)
+            | Stream::PipeReader(_)
+            | Stream::Null(_) => true,
             _ => false,
         }
     }
@@ -1538,8 +1621,10 @@ impl Stream {
             | Stream::StandardOutput(_)
             | Stream::NamedTcp(..)
             | Stream::Byte(_)
+            | Stream::OutputFile(..)
             | Stream::Callback(_)
-            | Stream::OutputFile(..) => true,
+            | Stream::PipeWriter(_)
+            | Stream::Null(_) => true,
             _ => false,
         }
     }
@@ -1636,7 +1721,8 @@ impl MachineState {
                 };
 
                 stream.set_past_end_of_stream(true);
-                Ok(unify!(self, result, end_of_stream))
+                unify!(self, result, end_of_stream);
+                Ok(())
             }
             EOFAction::Reset => {
                 if !stream.reset() {
@@ -1791,60 +1877,60 @@ impl MachineState {
         let addr = self.store(MachineState::deref(self, addr));
 
         read_heap_cell!(addr,
-                        (HeapCellValueTag::Atom, (name, arity)) => {
-                            debug_assert_eq!(arity, 0);
+            (HeapCellValueTag::Atom, (name, arity)) => {
+                debug_assert_eq!(arity, 0);
 
-                            return match indices.get_stream(name) {
-                                Some(stream) if !stream.is_null_stream() => Ok(stream),
-                                _ => {
-                                    let stub = functor_stub(caller, arity);
-                                    let addr = atom_as_cell!(name);
+                return match indices.get_stream(name) {
+                    Some(stream) => Ok(stream),
+                    _ => {
+                        let stub = functor_stub(caller, arity);
+                        let addr = atom_as_cell!(name);
 
-                                    let existence_error = self.existence_error(ExistenceError::Stream(addr));
+                        let existence_error = self.existence_error(ExistenceError::Stream(addr));
 
-                                    Err(self.error_form(existence_error, stub))
-                                }
-                            };
-                        }
-                        (HeapCellValueTag::Str, s) => {
-                            let (name, arity) = cell_as_atom_cell!(self.heap[s])
-                                .get_name_and_arity();
+                        Err(self.error_form(existence_error, stub))
+                    }
+                };
+            }
+            (HeapCellValueTag::Str, s) => {
+                let (name, arity) = cell_as_atom_cell!(self.heap[s])
+                    .get_name_and_arity();
 
-                            debug_assert_eq!(arity, 0);
+                debug_assert_eq!(arity, 0);
 
-                            return match indices.get_stream(name) {
-                                Some(stream) if !stream.is_null_stream() => Ok(stream),
-                                _ => {
-                                    let stub = functor_stub(caller, arity);
-                                    let addr = atom_as_cell!(name);
+                return match indices.get_stream(name) {
+                    Some(stream) => Ok(stream),
+                    _ => {
+                        let stub = functor_stub(caller, arity);
+                        let addr = atom_as_cell!(name);
 
-                                    let existence_error = self.existence_error(ExistenceError::Stream(addr));
+                        let existence_error = self.existence_error(ExistenceError::Stream(addr));
 
-                                    Err(self.error_form(existence_error, stub))
-                                }
-                            };
-                        }
-                        (HeapCellValueTag::Cons, ptr) => {
-                            match_untyped_arena_ptr!(ptr,
-                                (ArenaHeaderTag::Stream, stream) => {
-                                    return if stream.is_null_stream() {
-                                        Err(self.open_permission_error(stream_as_cell!(stream), caller, arity))
-                                    } else {
-                                        Ok(stream)
-                                    };
-                                }
-                                (ArenaHeaderTag::Dropped, _value) => {
-                                    let stub = functor_stub(caller, arity);
-                                    let err = self.existence_error(ExistenceError::Stream(addr));
+                        Err(self.error_form(existence_error, stub))
+                    }
+                };
+            }
+            (HeapCellValueTag::Cons, ptr) => {
+                match_untyped_arena_ptr!(ptr,
+                   (ArenaHeaderTag::Stream, stream) => {
+                       return if stream.is_null_stream() {
+                           Err(self.open_permission_error(stream_as_cell!(stream), caller, arity))
+                       } else {
+                           Ok(stream)
+                       };
+                   }
+                   (ArenaHeaderTag::Dropped, _value) => {
+                       let stub = functor_stub(caller, arity);
+                       let err = self.existence_error(ExistenceError::Stream(addr));
 
-                                    return Err(self.error_form(err, stub));
-                                }
-                                _ => {
-                                }
-                            );
-                        }
-                        _ => {
-                        }
+                       return Err(self.error_form(err, stub));
+                   }
+                   _ => {
+                   }
+                );
+            }
+            _ => {
+            }
         );
 
         let stub = functor_stub(caller, arity);
@@ -1891,7 +1977,7 @@ impl MachineState {
             if let Some(alias) = stream.options().get_alias() {
                 atom_as_cell!(alias)
             } else {
-                stream_as_cell!(stream)
+                stream.into()
             },
         );
 
@@ -1937,7 +2023,7 @@ impl MachineState {
         let err = self.permission_error(
             Permission::Open,
             atom!("source_sink"),
-            functor!(atom!("alias"), [atom(alias)]),
+            functor!(atom!("alias"), [atom_as_cell(alias)]),
         );
 
         self.error_form(err, stub)
@@ -1945,7 +2031,7 @@ impl MachineState {
 
     pub(crate) fn reposition_error(&mut self, stub_name: Atom, stub_arity: usize) -> MachineStub {
         let stub = functor_stub(stub_name, stub_arity);
-        let rep_stub = functor!(atom!("reposition"), [atom(atom!("true"))]);
+        let rep_stub = functor!(atom!("reposition"), [atom_as_cell((atom!("true")))]);
         let err = self.permission_error(Permission::Open, atom!("source_sink"), rep_stub);
 
         self.error_form(err, stub)
@@ -2070,7 +2156,7 @@ impl MachineState {
                         _ => {
                             // assume the OS is out of file descriptors.
                             let stub = functor_stub(atom!("open"), 4);
-                            let err = self.resource_error(ResourceError::OutOfFiles);
+                            let err = Self::resource_error(ResourceError::OutOfFiles);
 
                             return Err(self.error_form(err, stub));
                         }
@@ -2097,14 +2183,26 @@ impl MachineState {
 }
 
 #[cfg(test)]
-mod tests {
+mod test {
     use crate::*;
     use std::{cell::RefCell, io::Read, io::Write, rc::Rc};
 
-    fn succeeded(answer: Vec<Result<LeafAnswer, Term>>) -> bool {
+    use crate::machine::config::*;
+    use crate::LeafAnswer;
+
+    use super::{Stream, StreamOptions};
+
+    fn succeeded<T>(answer: Vec<Result<LeafAnswer, T>>) -> bool {
         // Ideally this should be a method in QueryState or LeafAnswer.
         matches!(
             answer[0].as_ref(),
+            Ok(LeafAnswer::True) | Ok(LeafAnswer::LeafAnswer { .. })
+        )
+    }
+
+    fn is_successful<T>(answer: &Result<LeafAnswer, T>) -> bool {
+        matches!(
+            answer,
             Ok(LeafAnswer::True) | Ok(LeafAnswer::LeafAnswer { .. })
         )
     }
@@ -2250,6 +2348,19 @@ mod tests {
 
     #[test]
     #[cfg_attr(miri, ignore)]
+    fn current_input_null_stream() {
+        let mut machine = MachineBuilder::new()
+            .with_streams(StreamConfig::in_memory())
+            .build();
+
+        let results = machine.run_query("current_input(S).").collect::<Vec<_>>();
+
+        assert_eq!(results.len(), 1);
+        assert!(is_successful(&results[0]));
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
     fn close_memory_user_output_stream_twice() {
         let mut machine = MachineBuilder::new()
             .with_streams(StreamConfig::in_memory())
@@ -2261,6 +2372,23 @@ mod tests {
 
         assert_eq!(results.len(), 1);
         assert!(results[0].is_ok());
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn read_null_stream() {
+        let mut machine = MachineBuilder::new()
+            .with_streams(StreamConfig::in_memory())
+            .build();
+
+        let results = machine.run_query("get_code(C).").collect::<Vec<_>>();
+
+        assert_eq!(results.len(), 1);
+        assert!(
+            is_successful(&results[0]),
+            "Expected read to succeed, got {:?}",
+            results[0]
+        );
     }
 
     #[test]
@@ -2287,6 +2415,21 @@ mod tests {
 
     #[test]
     #[cfg_attr(miri, ignore)]
+    fn current_output_null_stream() {
+        // TODO: switch to a proper solution for configuring the machine with null streams
+        // once `StreamConfig` supports it.
+        let mut machine = MachineBuilder::new().build();
+        machine.user_output = Stream::Null(StreamOptions::default());
+        machine.configure_streams();
+
+        let results = machine.run_query("current_output(S).").collect::<Vec<_>>();
+
+        assert_eq!(results.len(), 1);
+        assert!(is_successful(&results[0]));
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
     fn close_realiased_user_output() {
         let mut machine = MachineBuilder::new()
             .with_streams(StreamConfig::in_memory())
@@ -2307,5 +2450,101 @@ mod tests {
 
         assert_eq!(results.len(), 1);
         assert!(results[0].is_ok());
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn write_null_stream() {
+        // TODO: switch to a proper solution for configuring the machine with null streams
+        // once `StreamConfig` supports it.
+        let mut machine = MachineBuilder::new().build();
+        machine.user_output = Stream::Null(StreamOptions::default());
+        machine.configure_streams();
+
+        let results = machine.run_query("write(hello).").collect::<Vec<_>>();
+
+        assert_eq!(results.len(), 1);
+        assert!(
+            is_successful(&results[0]),
+            "Expected write to succeed, got {:?}",
+            results[0]
+        );
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn put_code_null_stream() {
+        // TODO: switch to a proper solution for configuring the machine with null streams
+        // once `StreamConfig` supports it.
+        let mut machine = MachineBuilder::new().build();
+        machine.user_output = Stream::Null(StreamOptions::default());
+        machine.configure_streams();
+
+        let results = machine
+            .run_query("put_code(user_output, 65).")
+            .collect::<Vec<_>>();
+
+        assert_eq!(results.len(), 1);
+        assert!(
+            is_successful(&results[0]),
+            "Expected write to succeed, got {:?}",
+            results[0]
+        );
+    }
+
+    /// A variant of the [`write_null_stream`] that tries to write to a (null) input stream.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn write_null_input_stream() {
+        let mut machine = MachineBuilder::new()
+            .with_streams(StreamConfig::in_memory())
+            .build();
+
+        let results = machine
+            .run_query("current_input(Stream), write(Stream, hello).")
+            .collect::<Vec<_>>();
+
+        assert_eq!(results.len(), 1);
+        assert!(
+            is_successful(&results[0]),
+            "Expected write to succeed, got {:?}",
+            results[0]
+        );
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn at_end_of_stream_0_null_stream() {
+        let mut machine = MachineBuilder::new()
+            .with_streams(StreamConfig::in_memory())
+            .build();
+
+        let results = machine.run_query("at_end_of_stream.").collect::<Vec<_>>();
+
+        assert_eq!(results.len(), 1);
+        assert!(
+            is_successful(&results[0]),
+            "Expected at_end_of_stream to succeed, got {:?}",
+            results[0]
+        );
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn at_end_of_stream_1_null_stream() {
+        let mut machine = MachineBuilder::new()
+            .with_streams(StreamConfig::in_memory())
+            .build();
+
+        let results = machine
+            .run_query("current_input(Stream), at_end_of_stream(Stream).")
+            .collect::<Vec<_>>();
+
+        assert_eq!(results.len(), 1);
+        assert!(
+            is_successful(&results[0]),
+            "Expected at_end_of_stream to succeed, got {:?}",
+            results[0]
+        );
     }
 }
