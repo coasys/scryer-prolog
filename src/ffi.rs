@@ -346,7 +346,10 @@ impl StructImpl {
 }
 
 struct PointerArgs<'a, 'val> {
-    memory: Vec<Arg>,
+    // libffi 5.x introduced a lifetime parameter on Arg. Use 'a here so
+    // the Vec<Arg<'a>> borrows from the same lifetime as the ArgValue slice
+    // this PointerArgs was built from.
+    memory: Vec<Arg<'a>>,
     phantom: PhantomData<&'a mut ArgValue<'val>>,
 }
 
@@ -367,7 +370,8 @@ impl<'args, 'val> PointerArgs<'args, 'val> {
                 ArgValue::F64(a) => libffi::middle::arg(a),
                 ArgValue::Ptr(ptr, _) => Arg::new(ptr),
                 ArgValue::Struct(s) => unsafe {
-                    std::mem::transmute::<*mut c_void, Arg>(s.ptr.as_ptr())
+                    // libffi 5.x: Arg is Arg<'a>, transmute target updated.
+                    std::mem::transmute::<*mut c_void, Arg<'_>>(s.ptr.as_ptr())
                 },
             })
             .collect();
@@ -379,8 +383,9 @@ impl<'args, 'val> PointerArgs<'args, 'val> {
     }
 }
 
-impl Deref for PointerArgs<'_, '_> {
-    type Target = [Arg];
+impl<'a> Deref for PointerArgs<'a, '_> {
+    // libffi 5.x: Arg gained a lifetime parameter.
+    type Target = [Arg<'a>];
 
     fn deref(&self) -> &Self::Target {
         &self.memory
@@ -1003,9 +1008,13 @@ impl Error for FfiError {}
 
 impl From<libffi::low::Error> for FfiError {
     fn from(value: libffi::low::Error) -> Self {
+        // libffi 5.x marked low::Error as #[non_exhaustive], so we need a
+        // wildcard arm. Any new variant maps to UnsupportedTypedef as a
+        // safe generic fallback until scryer explicitly handles it.
         match value {
             libffi::low::Error::Typedef => FfiError::UnsupportedTypedef,
             libffi::low::Error::Abi => FfiError::UnsupportedAbi,
+            _ => FfiError::UnsupportedTypedef,
         }
     }
 }
